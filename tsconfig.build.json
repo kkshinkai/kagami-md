@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [],
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": false,
+    "stripInternal": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "dist/types",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "customConditions": []
+  },
+  "include": [
+    "src/index.ts"
+  ],
+  "exclude": []
+}

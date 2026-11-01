@@ -1,0 +1,170 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* The colors and the font of every part are variables. They are set here once for a light and
+ * once for a dark page, at no specificity, so that a page may set its own. */
+:where(:root) {
+  --kagami-ui-font-family: ui-sans-serif, -apple-system, system-ui, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  --kagami-ui-bg: #fff;
+  --kagami-ui-color: #28292c;
+  --kagami-ui-muted-color: #65686e;
+  --kagami-ui-icon-color: #7a7e86;
+  --kagami-ui-danger-color: #c33449;
+  --kagami-ui-border-color: #ededf0;
+  --kagami-ui-field-border-color: #d0d2d7;
+  --kagami-ui-focus-color: #397fdf;
+  --kagami-ui-active-bg: color-mix(in srgb, #fff, #28292c 8%);
+  --kagami-ui-shadow: 0 14px 28px -6px rgb(0 0 0 / 10%), 0 2px 4px -1px rgb(0 0 0 / 6%);
+}
+:where(.dark) {
+  --kagami-ui-bg: #303134;
+  --kagami-ui-color: #eeeeef;
+  --kagami-ui-muted-color: #b1b2b8;
+  --kagami-ui-icon-color: #999da6;
+  --kagami-ui-danger-color: #f57c88;
+  --kagami-ui-border-color: #333438;
+  --kagami-ui-field-border-color: #515359;
+  --kagami-ui-focus-color: #85b5ff;
+  --kagami-ui-active-bg: color-mix(in srgb, #303134, #eeeeef 8%);
+  --kagami-ui-shadow: 0 14px 28px -6px rgb(0 0 0 / 20%), 0 2px 4px -1px rgb(0 0 0 / 12%);
+}
+
+.kagami-popup {
+  position: fixed;
+  z-index: 30;
+  box-sizing: border-box;
+  padding: 4px;
+  border: 1px solid var(--kagami-ui-border-color);
+  border-radius: 10px;
+  outline: none;
+  background: var(--kagami-ui-bg);
+  color: var(--kagami-ui-color);
+  box-shadow: var(--kagami-ui-shadow);
+  font-family: var(--kagami-ui-font-family);
+  font-size: 13px;
+  line-height: 20px;
+  user-select: none;
+  /* A popup grows out of the edge it is attached by. */
+  transform-origin: 50% top;
+  animation: kagami-popup-in 100ms ease-out;
+}
+.kagami-popup[data-side='above'] { transform-origin: 50% bottom; }
+.kagami-popup[data-side='right'] { transform-origin: left 50%; }
+.kagami-popup[data-side='left'] { transform-origin: right 50%; }
+.kagami-popup[hidden] { display: none; }
+@keyframes kagami-popup-in { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .kagami-popup { animation: none; } }
+
+.kagami-menu {
+  min-width: 180px;
+  max-height: calc(100vh - 26px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  outline: none;
+}
+
+.kagami-menu-item, .kagami-list-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  border-radius: 6px;
+  outline: none;
+  color: var(--kagami-ui-color);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: default;
+}
+.kagami-menu-item:focus, .kagami-list-item[aria-selected='true'] { background: var(--kagami-ui-active-bg); }
+.kagami-menu-item[aria-disabled='true'] { color: var(--kagami-ui-muted-color); opacity: .6; }
+.kagami-menu-item[data-destructive='true'] { color: var(--kagami-ui-danger-color); }
+.kagami-menu-item[data-destructive='true']:focus {
+  background: color-mix(in srgb, var(--kagami-ui-danger-color) 10%, transparent);
+}
+
+.kagami-menu-item > svg, .kagami-list-item > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--kagami-ui-icon-color);
+  pointer-events: none;
+}
+.kagami-menu-item[data-destructive='true'] > svg { color: inherit; }
+
+/* The mark of the present choice is at the end of its item, and its place is kept on the
+ * others, so that choosing another moves no label. */
+.kagami-menu-item[aria-checked] { padding-right: 30px; }
+.kagami-menu-item > svg.kagami-menu-check {
+  position: absolute;
+  right: 8px;
+  color: inherit;
+  visibility: hidden;
+}
+.kagami-menu-item[aria-checked='true'] > svg.kagami-menu-check { visibility: visible; }
+.kagami-list-item > svg.kagami-list-check { margin-left: auto; color: inherit; }
+
+.kagami-menu-heading {
+  margin: 4px 0;
+  padding: 0 8px;
+  color: var(--kagami-ui-muted-color);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+.kagami-menu-separator {
+  height: 1px;
+  margin: 2px 4px;
+  background: var(--kagami-ui-border-color);
+}
+
+.kagami-list {
+  max-height: 300px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-block: 4px;
+}
+.kagami-list-text { min-width: 0; }
+.kagami-list-text > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kagami-list-description { color: var(--kagami-ui-muted-color); font-size: 12px; line-height: 16px; }
+.kagami-list-status {
+  padding: 12px;
+  color: var(--kagami-ui-muted-color);
+  text-align: center;
+}
+.kagami-list-status[hidden] { display: none; }
+
+/* A search field over the list it searches. */
+.kagami-popup:has(> .kagami-picker) { width: 240px; padding: 0; overflow: hidden; }
+.kagami-picker-input {
+  box-sizing: border-box;
+  display: block;
+  width: calc(100% - 16px);
+  height: 28px;
+  margin: 8px 8px 4px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  outline: none;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--kagami-ui-field-border-color);
+  color: inherit;
+  font: inherit;
+}
+.kagami-picker-input:focus {
+  box-shadow: inset 0 0 0 1px var(--kagami-ui-focus-color),
+    0 0 0 2px color-mix(in srgb, var(--kagami-ui-focus-color) 25%, transparent);
+}
+.kagami-picker-input::placeholder { color: var(--kagami-ui-muted-color); }
+.kagami-picker > .kagami-list { max-height: min(392px, calc(100vh - 80px)); padding: 0 4px 4px; }
+
+/* The list of completions is as wide as what it lists needs: page names are long, callout kinds short. */
+.completion-list { width: 320px; }
+.completion-list[data-kind='callout'] { width: 144px; }

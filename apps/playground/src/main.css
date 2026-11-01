@@ -1,0 +1,82 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* The one column of the page: the editor's width with its 24px padding. Text stands 4px
+ * further in, as the editor's blocks do; the bar's title and switch line up with it. */
+:root { --column-width: 768px; }
+body {
+  margin: 0;
+  background: var(--kagami-ui-bg);
+  color: var(--kagami-ui-color);
+  font-family: var(--kagami-ui-font-family);
+}
+.top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 44px;
+  background: var(--kagami-ui-bg);
+  border-bottom: 1px solid var(--kagami-ui-border-color);
+}
+.top-bar-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  max-width: var(--column-width);
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 28px;
+}
+.title { font-size: 18px; font-weight: 600; }
+.mode-switch { display: flex; }
+.mode-switch button {
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 10px;
+  background: transparent;
+  color: var(--kagami-ui-muted-color);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+.mode-switch button[aria-pressed='true'] {
+  background: var(--kagami-ui-active-bg);
+  color: var(--kagami-ui-color);
+}
+.mode-switch button:hover { color: var(--kagami-ui-color); }
+.mode-switch button:focus-visible { outline: 2px solid var(--kagami-ui-focus-color); }
+/* The editor spans the page and keeps its column itself, so that the space beside the
+ * column, where a block's handle is, belongs to it. */
+.editor-mount .markdown-editor {
+  --editor-width: var(--column-width);
+  --editor-font-size: 16px;
+  --editor-line-height: 1.6;
+  --editor-padding: 48px 24px 30vh;
+  --editor-min-height: 60vh;
+}
+.source-mount { box-sizing: border-box; max-width: var(--column-width); margin: 0 auto; padding: 24px 24px 0; }
+.source-mount .cm-editor { background: transparent; color: var(--kagami-ui-color); }
+.source-mount .cm-editor.cm-focused { outline: none; }
+.source-mount .cm-scroller {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.source-mount .cm-content {
+  /* The editor's text stands 4px inside its column; the source's starts where it does. */
+  padding: 24px 4px 30vh;
+  min-height: 60vh;
+  caret-color: var(--kagami-ui-color);
+}
+.source-mount .cm-line { padding: 0; }
+.source-mount .cm-gutters { border: 0; background: transparent; color: var(--editor-html-punctuation-color); }
+.source-mount .cm-lineNumbers .cm-gutterElement { box-sizing: border-box; min-width: 40px; padding: 0 16px 0 0; }
+/* Where there is room, the line numbers hang left of the column and the text stays where the editor's is. */
+@media (min-width: 800px) {
+  .source-mount .cm-editor { margin-inline-start: -40px; }
+}

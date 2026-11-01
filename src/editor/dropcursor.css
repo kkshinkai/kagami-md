@@ -1,0 +1,30 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.md-block-drop-line[hidden],
+.md-block-drop-parent[hidden] {
+  display: none;
+}
+.md-block-drop-line {
+  position: absolute;
+  z-index: 35;
+  pointer-events: none;
+}
+.md-block-drop-indent,
+.md-block-drop-tail {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--editor-selection-border);
+}
+.md-block-drop-parent {
+  position: absolute;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: var(--block-selection-radius);
+  background: color-mix(in srgb, var(--block-selection-fill) 60%, transparent);
+}

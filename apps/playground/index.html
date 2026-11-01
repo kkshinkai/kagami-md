@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KagamiMD</title>
+  </head>
+  <body>
+    <header class="top-bar">
+      <div class="top-bar-content">
+        <span class="title">KagamiMD</span>
+        <div class="mode-switch" role="group" aria-label="View mode">
+          <button type="button" id="editor-mode" aria-pressed="true">Editor</button>
+          <button type="button" id="source-mode" aria-pressed="false">Source</button>
+        </div>
+      </div>
+    </header>
+    <main>
+      <div class="editor-mount" id="editor"></div>
+      <div class="source-mount" id="source" hidden></div>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

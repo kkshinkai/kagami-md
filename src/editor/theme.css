@@ -1,0 +1,92 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* Defaults inherit into editor instances.
+ * Hosts can override --editor-* on their theme root or on one editor. Keeping
+ * these defaults at zero specificity lets a host palette win without !important. */
+
+:where(:root) {
+  --editor-color-scheme: light;
+  --editor-text-color: #28292c;
+  --editor-muted-color: #65686e;
+  --editor-handle-color: color-mix(in srgb, #7a7e86 65%, transparent);
+  --editor-subtle-color: #6d7077;
+  --editor-link-color: #246bd1;
+  --editor-link-underline-color: rgb(36 107 209 / 35%);
+  --editor-border-color: #ededf0;
+  --editor-code-bg: rgb(66 35 3 / 3%);
+  --editor-selection-bg: #cce0fc;
+  --editor-selection-border: #397fdf;
+  --editor-focus-color: #397fdf;
+  --editor-quote-border: #b8b8b8;
+  --editor-table-header-bg: rgb(40 41 44 / 4%);
+  --editor-highlight-bg: #fff0b3;
+  --editor-html-faint-color: #c8cbd1;
+  --editor-html-punctuation-color: #9a9da4;
+  --editor-html-name-color: #1f6f43;
+  --editor-html-attribute-color: #8a5a00;
+  --editor-html-value-color: #246bd1;
+  --editor-html-comment-color: #8b8e95;
+  --editor-tag-bg: #eeedeb;
+  --editor-tag-color: #565451;
+  --editor-tag-marker-color: #aaa6a0;
+  --editor-tag-edit-marker-color: #98938d;
+  --editor-tag-slash-color: #a9a39c;
+  --editor-callout-note-color: #376b92;
+  --editor-callout-note-bg: #f3f7fa;
+  --editor-callout-tip-color: #39734e;
+  --editor-callout-tip-bg: #f2f7f3;
+  --editor-callout-important-color: #76549b;
+  --editor-callout-important-bg: #f6f3f9;
+  --editor-callout-warning-color: #886413;
+  --editor-callout-warning-bg: #fbf7ed;
+  --editor-callout-caution-color: #a4433d;
+  --editor-callout-caution-bg: #fcf3f2;
+  --editor-menu-bg: #fff;
+}
+
+/* The host's .dark class switches the palette and the color-scheme used by native controls and Shiki. */
+
+:where(.dark) {
+  --editor-color-scheme: dark;
+  --editor-text-color: #eeeeef;
+  --editor-muted-color: #b1b2b8;
+  --editor-handle-color: color-mix(in srgb, #999da6 65%, transparent);
+  --editor-subtle-color: #a1a4ac;
+  --editor-link-color: #5797ef;
+  --editor-link-underline-color: rgb(87 151 239 / 35%);
+  --editor-border-color: #333438;
+  --editor-code-bg: rgb(252 252 252 / 3%);
+  --editor-selection-bg: #36547b;
+  --editor-selection-border: #85b5ff;
+  --editor-focus-color: #85b5ff;
+  --editor-quote-border: #686868;
+  --editor-table-header-bg: rgb(238 238 239 / 4%);
+  --editor-highlight-bg: #514526;
+  --editor-html-faint-color: #50535a;
+  --editor-html-punctuation-color: #7d8088;
+  --editor-html-name-color: #7fc79b;
+  --editor-html-attribute-color: #d9b36c;
+  --editor-html-value-color: #7fb0f5;
+  --editor-html-comment-color: #8b8e95;
+  --editor-tag-bg: #333333;
+  --editor-tag-color: #d3d3d3;
+  --editor-tag-marker-color: #969696;
+  --editor-tag-edit-marker-color: #b1b2b8;
+  --editor-tag-slash-color: #969696;
+  --editor-callout-note-color: #94b9d7;
+  --editor-callout-note-bg: #242b31;
+  --editor-callout-tip-color: #99c2a6;
+  --editor-callout-tip-bg: #242d27;
+  --editor-callout-important-color: #bda6d6;
+  --editor-callout-important-bg: #2d2733;
+  --editor-callout-warning-color: #d6bc7b;
+  --editor-callout-warning-bg: #302c22;
+  --editor-callout-caution-color: #dca29b;
+  --editor-callout-caution-bg: #322727;
+  --editor-menu-bg: #303134;
+}

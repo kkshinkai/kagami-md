@@ -1,0 +1,316 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d5603bb12 100644
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -2979,7 +2979,9 @@ function initInput(view) {
+   var _loop2 = function _loop2() {
+     var handler = handlers[event];
+     view.dom.addEventListener(event, view.input.eventHandlers[event] = function (event) {
+-      if (eventBelongsToView(view, event) && !runCustomHandler(view, event) && (view.editable || !(event.type in editHandlers))) handler(view, event);
++      if (!eventBelongsToView(view, event)) return;
++      if (readsSelection(view, event)) view.domObserver.flush();
++      if (!runCustomHandler(view, event) && (view.editable || !(event.type in editHandlers))) handler(view, event);
+     }, passiveHandlers[event] ? {
+       passive: true
+     } : undefined);
+@@ -2992,6 +2994,23 @@ function initInput(view) {
+   });
+   ensureListeners(view);
+ }
++// A key, an input, a copy, a cut or a paste acts on the selection, and the browser may have moved
++// it without its selectionchange event having arrived yet: a key pressed right after native
++// navigation. Read the DOM selection first, as that event would have.
++function readsSelection(view, event) {
++  switch (event.type) {
++    case "keydown":
++      return !view.composing && !event.isComposing && event.keyCode != 229;
++    case "beforeinput":
++      return !view.composing && !event.isComposing;
++    case "copy":
++    case "cut":
++    case "paste":
++      return true;
++    default:
++      return false;
++  }
++}
+ function setSelectionOrigin(view, origin) {
+   view.input.lastSelectionOrigin = origin;
+   view.input.lastSelectionTime = Date.now();
+@@ -3206,6 +3225,12 @@ handlers.mousedown = function (view, _event) {
+     event.preventDefault();
+   } else {
+     setSelectionOrigin(view, "pointer");
++    // The browser selects the word or the paragraph itself. Read what it selected at release.
++    view.root.addEventListener("mouseup", function () {
++      return view.domObserver.flush();
++    }, {
++      once: true
++    });
+   }
+ };
+ var MouseDown = function () {
+@@ -3232,6 +3257,9 @@ var MouseDown = function () {
+       this.view.root.removeEventListener("mouseup", this.up);
+       this.view.root.removeEventListener("mousemove", this.move);
+       if (this.view.input.mouseDown == this) this.view.input.mouseDown = null;
++      // The selection a press and a drag made is read at their release, not when its
++      // selectionchange arrives, which can be after the next event.
++      this.view.domObserver.flush();
+     }
+   }, {
+     key: "delaySelUpdate",
+@@ -3682,6 +3710,9 @@ handlers.focus = function (view) {
+     view.domObserver.start();
+     view.focused = true;
+     setTimeout(function () {
++      // Native navigation can finish before its queued selectionchange event. Read that
++      // pending selection before deciding whether focus needs a DOM restoration.
++      if (view.docView && view.hasFocus()) view.domObserver.flush();
+       if (view.docView && view.hasFocus() && !view.domObserver.currentSelection.eq(view.domSelectionRange())) selectionToDOM(view);
+     }, 20);
+   }
+@@ -4350,6 +4381,7 @@ var DOMObserver = function () {
+     this.flushingSoon = -1;
+     this.observer = null;
+     this.currentSelection = new SelectionState();
++    this.selectionDocument = null;
+     this.onCharData = null;
+     this.suppressingSelectionUpdates = false;
+     this.lastChangedTextNode = null;
+@@ -4428,12 +4460,13 @@ var DOMObserver = function () {
+   }, {
+     key: "connectSelection",
+     value: function connectSelection() {
+-      this.view.dom.ownerDocument.addEventListener("selectionchange", this.onSelectionChange);
++      // The document the selection listener is on, which is not the view's once the view moves.
++      (this.selectionDocument = this.view.dom.ownerDocument).addEventListener("selectionchange", this.onSelectionChange);
+     }
+   }, {
+     key: "disconnectSelection",
+     value: function disconnectSelection() {
+-      this.view.dom.ownerDocument.removeEventListener("selectionchange", this.onSelectionChange);
++      if (this.selectionDocument) this.selectionDocument.removeEventListener("selectionchange", this.onSelectionChange);
+     }
+   }, {
+     key: "suppressSelectionUpdates",
+@@ -5337,6 +5370,12 @@ var EditorView = function () {
+     key: "updateRoot",
+     value: function updateRoot() {
+       this._root = null;
++      // A view moved to another document listens for selection changes there.
++      var observer = this.domObserver;
++      if (observer.selectionDocument && observer.selectionDocument != this.dom.ownerDocument) {
++        observer.disconnectSelection();
++        observer.connectSelection();
++      }
+     }
+   }, {
+     key: "posAtCoords",
+diff --git a/dist/index.js b/dist/index.js
+index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3cf19e95e1 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -3152,8 +3152,11 @@ function initInput(view) {
+     for (let event in handlers) {
+         let handler = handlers[event];
+         view.dom.addEventListener(event, view.input.eventHandlers[event] = (event) => {
+-            if (eventBelongsToView(view, event) && !runCustomHandler(view, event) &&
+-                (view.editable || !(event.type in editHandlers)))
++            if (!eventBelongsToView(view, event))
++                return;
++            if (readsSelection(view, event))
++                view.domObserver.flush();
++            if (!runCustomHandler(view, event) && (view.editable || !(event.type in editHandlers)))
+                 handler(view, event);
+         }, passiveHandlers[event] ? { passive: true } : undefined);
+     }
+@@ -3164,6 +3167,19 @@ function initInput(view) {
+         view.dom.addEventListener("input", () => null);
+     ensureListeners(view);
+ }
++// A key, an input, a copy, a cut or a paste acts on the selection, and the browser may have moved
++// it without its selectionchange event having arrived yet: a key pressed right after native
++// navigation. Read the DOM selection first, as that event would have.
++function readsSelection(view, event) {
++    switch (event.type) {
++        case "keydown": return !view.composing && !event.isComposing && event.keyCode != 229;
++        case "beforeinput": return !view.composing && !event.isComposing;
++        case "copy":
++        case "cut":
++        case "paste": return true;
++        default: return false;
++    }
++}
+ function setSelectionOrigin(view, origin) {
+     view.input.lastSelectionOrigin = origin;
+     view.input.lastSelectionTime = Date.now();
+@@ -3394,6 +3410,8 @@ handlers.mousedown = (view, _event) => {
+     }
+     else {
+         setSelectionOrigin(view, "pointer");
++        // The browser selects the word or the paragraph itself. Read what it selected at release.
++        view.root.addEventListener("mouseup", () => view.domObserver.flush(), { once: true });
+     }
+ };
+ class MouseDown {
+@@ -3415,6 +3433,9 @@ class MouseDown {
+         this.view.root.removeEventListener("mousemove", this.move);
+         if (this.view.input.mouseDown == this)
+             this.view.input.mouseDown = null;
++        // The selection a press and a drag made is read at their release, not when its
++        // selectionchange arrives, which can be after the next event.
++        this.view.domObserver.flush();
+     }
+     delaySelUpdate() { return false; }
+ }
+@@ -3928,6 +3949,10 @@ handlers.focus = view => {
+         view.domObserver.start();
+         view.focused = true;
+         setTimeout(() => {
++            // Native navigation can finish before its queued selectionchange event. Read that
++            // pending selection before deciding whether focus needs a DOM restoration.
++            if (view.docView && view.hasFocus())
++                view.domObserver.flush();
+             if (view.docView && view.hasFocus() && !view.domObserver.currentSelection.eq(view.domSelectionRange()))
+                 selectionToDOM(view);
+         }, 20);
+@@ -4692,6 +4717,7 @@ class DOMObserver {
+         this.flushingSoon = -1;
+         this.observer = null;
+         this.currentSelection = new SelectionState;
++        this.selectionDocument = null;
+         this.onCharData = null;
+         this.suppressingSelectionUpdates = false;
+         this.lastChangedTextNode = null;
+@@ -4761,10 +4787,12 @@ class DOMObserver {
+         this.disconnectSelection();
+     }
+     connectSelection() {
+-        this.view.dom.ownerDocument.addEventListener("selectionchange", this.onSelectionChange);
++        // The document the selection listener is on, which is not the view's once the view moves.
++        (this.selectionDocument = this.view.dom.ownerDocument).addEventListener("selectionchange", this.onSelectionChange);
+     }
+     disconnectSelection() {
+-        this.view.dom.ownerDocument.removeEventListener("selectionchange", this.onSelectionChange);
++        if (this.selectionDocument)
++            this.selectionDocument.removeEventListener("selectionchange", this.onSelectionChange);
+     }
+     suppressSelectionUpdates() {
+         this.suppressingSelectionUpdates = true;
+@@ -5782,6 +5810,12 @@ class EditorView {
+     */
+     updateRoot() {
+         this._root = null;
++        // A view moved to another document listens for selection changes there.
++        let observer = this.domObserver;
++        if (observer.selectionDocument && observer.selectionDocument != this.dom.ownerDocument) {
++            observer.disconnectSelection();
++            observer.connectSelection();
++        }
+     }
+     /**
+     Given a pair of viewport coordinates, return the document
+diff --git a/src/domobserver.ts b/src/domobserver.ts
+index 337240e7c0952b4bc6734bd293c5fd393950bc7a..b57722775b733ce969c90bf1b1a3e63e495544e4 100644
+--- a/src/domobserver.ts
++++ b/src/domobserver.ts
+@@ -116,12 +116,15 @@ export class DOMObserver {
+     this.disconnectSelection()
+   }
+ 
++  // The document the selection listener is on, which is not the view's once the view moves.
++  selectionDocument: Document | null = null
++
+   connectSelection() {
+-    this.view.dom.ownerDocument.addEventListener("selectionchange", this.onSelectionChange)
++    (this.selectionDocument = this.view.dom.ownerDocument).addEventListener("selectionchange", this.onSelectionChange)
+   }
+ 
+   disconnectSelection() {
+-    this.view.dom.ownerDocument.removeEventListener("selectionchange", this.onSelectionChange)
++    this.selectionDocument?.removeEventListener("selectionchange", this.onSelectionChange)
+   }
+ 
+   suppressSelectionUpdates() {
+diff --git a/src/index.ts b/src/index.ts
+index 7d4205736a5533b8c22b2ce9a8ea719f8f52f143..fbe10df67329af410c30b73af15aa1a090b64801 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -362,6 +362,12 @@ export class EditorView {
+   /// shadow tree, call this to make it recompute its root.
+   updateRoot() {
+     this._root = null
++    // A view moved to another document listens for selection changes there.
++    let observer = this.domObserver
++    if (observer.selectionDocument && observer.selectionDocument != this.dom.ownerDocument) {
++      observer.disconnectSelection()
++      observer.connectSelection()
++    }
+   }
+ 
+   /// Given a pair of viewport coordinates, return the document
+diff --git a/src/input.ts b/src/input.ts
+index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..ac3b7625cb40d436f99634313ebe3fe97ced5a76 100644
+--- a/src/input.ts
++++ b/src/input.ts
+@@ -47,8 +47,9 @@ export function initInput(view: EditorView) {
+   for (let event in handlers) {
+     let handler = handlers[event]
+     view.dom.addEventListener(event, view.input.eventHandlers[event] = (event: Event) => {
+-      if (eventBelongsToView(view, event) && !runCustomHandler(view, event) &&
+-          (view.editable || !(event.type in editHandlers)))
++      if (!eventBelongsToView(view, event)) return
++      if (readsSelection(view, event)) view.domObserver.flush()
++      if (!runCustomHandler(view, event) && (view.editable || !(event.type in editHandlers)))
+         handler(view, event)
+     }, passiveHandlers[event] ? {passive: true} : undefined)
+   }
+@@ -60,6 +61,18 @@ export function initInput(view: EditorView) {
+   ensureListeners(view)
+ }
+ 
++// A key, an input, a copy, a cut or a paste acts on the selection, and the browser may have moved
++// it without its selectionchange event having arrived yet: a key pressed right after native
++// navigation. Read the DOM selection first, as that event would have.
++function readsSelection(view: EditorView, event: Event) {
++  switch (event.type) {
++    case "keydown": return !view.composing && !(event as KeyboardEvent).isComposing && (event as KeyboardEvent).keyCode != 229
++    case "beforeinput": return !view.composing && !(event as InputEvent).isComposing
++    case "copy": case "cut": case "paste": return true
++    default: return false
++  }
++}
++
+ function setSelectionOrigin(view: EditorView, origin: string) {
+   view.input.lastSelectionOrigin = origin
+   view.input.lastSelectionTime = Date.now()
+@@ -300,6 +313,8 @@ handlers.mousedown = (view, _event) => {
+     event.preventDefault()
+   } else {
+     setSelectionOrigin(view, "pointer")
++    // The browser selects the word or the paragraph itself. Read what it selected at release.
++    view.root.addEventListener("mouseup", () => view.domObserver.flush(), {once: true})
+   }
+ }
+ 
+@@ -324,6 +339,9 @@ abstract class MouseDown {
+     this.view.root.removeEventListener("mouseup", this.up as any)
+     this.view.root.removeEventListener("mousemove", this.move as any)
+     if (this.view.input.mouseDown == this) this.view.input.mouseDown = null
++    // The selection a press and a drag made is read at their release, not when its
++    // selectionchange arrives, which can be after the next event.
++    this.view.domObserver.flush()
+   }
+ 
+   delaySelUpdate() { return false }
+@@ -840,6 +858,9 @@ handlers.focus = view => {
+     view.domObserver.start()
+     view.focused = true
+     setTimeout(() => {
++      // Native navigation can finish before its queued selectionchange event. Read that
++      // pending selection before deciding whether focus needs a DOM restoration.
++      if (view.docView && view.hasFocus()) view.domObserver.flush()
+       if (view.docView && view.hasFocus() && !view.domObserver.currentSelection.eq(view.domSelectionRange()))
+         selectionToDOM(view)
+     }, 20)

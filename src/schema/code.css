@@ -1,0 +1,60 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.markdown-editor .ProseMirror .md-code-block {
+  position: relative;
+  padding: 8px var(--editor-block-padding-inline, 4px);
+  margin: 0;
+}
+
+.markdown-editor .ProseMirror .md-code-block > pre { margin: 0; }
+
+.md-code-block-toolbar {
+  position: absolute;
+  top: 12px;
+  right: calc(var(--editor-block-padding-inline, 4px) + 4px);
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  max-width: calc(100% - 2 * (var(--editor-block-padding-inline, 4px) + 4px));
+  padding: 2px;
+  border-radius: 6px;
+  box-shadow: 0 8px 12px rgb(25 25 25 / 3%), 0 2px 6px rgb(25 25 25 / 3%), 0 0 0 1px rgb(42 28 0 / 7%);
+  background: var(--editor-menu-bg);
+  opacity: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The toolbar stays while a host holds open what its button was pressed for. */
+.md-code-block:hover > .md-code-block-toolbar,
+.md-code-block:focus-within > .md-code-block-toolbar,
+.md-code-block-toolbar:has([aria-expanded='true']) {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.code-language-button {
+  width: auto;
+  height: 24px;
+  max-width: 100%;
+  gap: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--editor-muted-color);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.code-language-button > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.code-language-button > svg { flex: none; width: 12px; height: 12px; }

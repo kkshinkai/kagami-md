@@ -1,0 +1,237 @@
+diff --git a/dist/index.cjs b/dist/index.cjs
+--- a/dist/index.cjs
++++ b/dist/index.cjs
+@@ -86,7 +86,14 @@
+           merged = void 0;
+         if (merged = lastItem && lastItem.merge(item)) {
+           item = merged;
+-          if (i) newItems.pop();else oldItems = oldItems.slice(0, oldItems.length - 1);
++          if (newItems.length) newItems.pop();else oldItems = oldItems.slice(0, oldItems.length - 1);
++        }
++        // An empty replacement of an empty range is an identity, not an undoable change.
++        if (!preserveItems && item.step instanceof prosemirrorTransform.ReplaceStep && item.step.from == item.step.to && item.step.slice.content.size == 0) {
++          if (item.selection && !selection) eventCount--;
++          selection = item.selection;
++          lastItem = newItems.length ? newItems[newItems.length - 1] : oldItems.length ? oldItems.get(oldItems.length - 1) : null;
++          continue;
+         }
+         newItems.push(item);
+         if (selection) {
+@@ -221,6 +228,9 @@
+     value: function merge(other) {
+       if (this.step && other.step && !other.selection) {
+         var step = other.step.merge(this.step);
++        // Replacing exactly the preceding closed slice composes into one replacement.
++        if (!step && this.step instanceof prosemirrorTransform.ReplaceStep && other.step instanceof prosemirrorTransform.ReplaceStep && !this.step.structure && !other.step.structure && !other.step.slice.openStart && !other.step.slice.openEnd && !this.step.slice.openStart && !this.step.slice.openEnd && this.step.from == other.step.from && this.step.to == other.step.from + other.step.slice.size)
++          step = new prosemirrorTransform.ReplaceStep(other.step.from, other.step.to, this.step.slice);
+         if (step) return new Item(step.getMap().invert(), step, this.selection);
+       }
+     }
+@@ -250,13 +260,30 @@
+     var composition = tr.getMeta("composition");
+     var newGroup = history.prevTime == 0 || !appended && history.prevComposition != composition && (history.prevTime < (tr.time || 0) - options.newGroupDelay || !isAdjacentTo(tr, history.prevRanges));
+     var prevRanges = appended ? mapRanges(history.prevRanges, tr.mapping) : rangesFor(tr.mapping.maps);
+-    return new HistoryState(history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined, options, mustPreserveItems(state)), Branch.empty, prevRanges, tr.time, composition == null ? history.prevComposition : composition);
++    var done = history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined, options, mustPreserveItems(state));
++    var discarded = eventDiscarded(history.done, done, newGroup);
++    return new HistoryState(done, Branch.empty, discarded ? null : prevRanges, discarded ? 0 : tr.time, discarded ? -1 : composition == null ? history.prevComposition : composition);
+   } else if (rebased = tr.getMeta("rebased")) {
+     return new HistoryState(history.done.rebased(tr, rebased), history.undone.rebased(tr, rebased), mapRanges(history.prevRanges, tr.mapping), history.prevTime, history.prevComposition);
+   } else {
+     return new HistoryState(history.done.addMaps(tr.mapping.maps), history.undone.addMaps(tr.mapping.maps), mapRanges(history.prevRanges, tr.mapping), history.prevTime, history.prevComposition);
+   }
+ }
++function eventDiscarded(before, after, newGroup) {
++  if (after.items.length > before.items.length) return false;
++  var last = after.items.length ? after.items.get(after.items.length - 1) : null;
++  if (after.items.length == before.items.length) return newGroup && (!last || last == before.items.get(before.items.length - 1));
++  var found = !last,
++    removed = newGroup;
++  before.items.forEach(function (item) {
++    if (item == last) {
++      found = true;
++      return false;
++    }
++    if (item.selection) removed = true;
++  }, before.items.length, 0);
++  return found && removed;
++}
+ function isAdjacentTo(transform, prevRanges) {
+   if (!prevRanges) return false;
+   if (!transform.docChanged) return true;
+diff --git a/dist/index.js b/dist/index.js
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,5 +1,5 @@
+ import RopeSequence from 'rope-sequence';
+-import { Mapping } from 'prosemirror-transform';
++import { Mapping, ReplaceStep } from 'prosemirror-transform';
+ import { PluginKey, Plugin } from 'prosemirror-state';
+ 
+ // ProseMirror's history isn't simply a way to roll back to a previous
+@@ -86,10 +86,20 @@
+             let item = new Item(transform.mapping.maps[i], step, selection), merged;
+             if (merged = lastItem && lastItem.merge(item)) {
+                 item = merged;
+-                if (i)
++                if (newItems.length)
+                     newItems.pop();
+                 else
+                     oldItems = oldItems.slice(0, oldItems.length - 1);
++            }
++            // An empty replacement of an empty range is an identity, not an undoable change.
++            if (!preserveItems && item.step instanceof ReplaceStep &&
++                item.step.from == item.step.to && item.step.slice.content.size == 0) {
++                if (item.selection && !selection)
++                    eventCount--;
++                selection = item.selection;
++                lastItem = newItems.length ? newItems[newItems.length - 1] :
++                    oldItems.length ? oldItems.get(oldItems.length - 1) : null;
++                continue;
+             }
+             newItems.push(item);
+             if (selection) {
+@@ -236,6 +246,13 @@
+     merge(other) {
+         if (this.step && other.step && !other.selection) {
+             let step = other.step.merge(this.step);
++            // Replacing exactly the preceding closed slice composes into one replacement.
++            if (!step && this.step instanceof ReplaceStep && other.step instanceof ReplaceStep &&
++                !this.step.structure && !other.step.structure &&
++                !other.step.slice.openStart && !other.step.slice.openEnd &&
++                !this.step.slice.openStart && !this.step.slice.openEnd && this.step.from == other.step.from &&
++                this.step.to == other.step.from + other.step.slice.size)
++                step = new ReplaceStep(other.step.from, other.step.to, this.step.slice);
+             if (step)
+                 return new Item(step.getMap().invert(), step, this.selection);
+         }
+@@ -278,7 +295,10 @@
+             (!appended && history.prevComposition != composition &&
+                 (history.prevTime < (tr.time || 0) - options.newGroupDelay || !isAdjacentTo(tr, history.prevRanges)));
+         let prevRanges = appended ? mapRanges(history.prevRanges, tr.mapping) : rangesFor(tr.mapping.maps);
+-        return new HistoryState(history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined, options, mustPreserveItems(state)), Branch.empty, prevRanges, tr.time, composition == null ? history.prevComposition : composition);
++        let done = history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined, options, mustPreserveItems(state));
++        let discarded = eventDiscarded(history.done, done, newGroup);
++        return new HistoryState(done, Branch.empty, discarded ? null : prevRanges, discarded ? 0 : tr.time,
++            discarded ? -1 : composition == null ? history.prevComposition : composition);
+     }
+     else if (rebased = tr.getMeta("rebased")) {
+         // Used by the collab module to tell the history that some of its
+@@ -289,6 +309,24 @@
+         return new HistoryState(history.done.addMaps(tr.mapping.maps), history.undone.addMaps(tr.mapping.maps), mapRanges(history.prevRanges, tr.mapping), history.prevTime, history.prevComposition);
+     }
+ }
++// A canceled event leaves an old tail behind. Depth trimming leaves a new one.
++function eventDiscarded(before, after, newGroup) {
++    if (after.items.length > before.items.length)
++        return false;
++    let last = after.items.length ? after.items.get(after.items.length - 1) : null;
++    if (after.items.length == before.items.length)
++        return newGroup && (!last || last == before.items.get(before.items.length - 1));
++    let found = !last, removed = newGroup;
++    before.items.forEach(item => {
++        if (item == last) {
++            found = true;
++            return false;
++        }
++        if (item.selection)
++            removed = true;
++    }, before.items.length, 0);
++    return found && removed;
++}
+ function isAdjacentTo(transform, prevRanges) {
+     if (!prevRanges)
+         return false;
+diff --git a/src/history.ts b/src/history.ts
+--- a/src/history.ts
++++ b/src/history.ts
+@@ -1,5 +1,5 @@
+ import RopeSequence from "rope-sequence"
+-import {Mapping, Step, StepMap, Transform} from "prosemirror-transform"
++import {Mapping, ReplaceStep, Step, StepMap, Transform} from "prosemirror-transform"
+ import {Plugin, Command, PluginKey, EditorState, Transaction, SelectionBookmark} from "prosemirror-state"
+ 
+ // ProseMirror's history isn't simply a way to roll back to a previous
+@@ -90,9 +90,23 @@
+       let item = new Item(transform.mapping.maps[i], step, selection), merged
+       if (merged = lastItem && lastItem.merge(item)) {
+         item = merged
+-        if (i) newItems.pop()
++        if (newItems.length) newItems.pop()
+         else oldItems = oldItems.slice(0, oldItems.length - 1)
+       }
++      // Inverse text edits can merge into replacing an empty interval with nothing. This
++      // is an algebraic identity, not an undoable event. Remove it before bookkeeping;
++      // content equality alone is NOT enough (replacing existing content still has maps).
++      // A bookmark on a merged item was already counted, whereas `selection` starts an
++      // event not counted yet. Carry either bookmark to any remaining steps in this same
++      // transform. Preserve-items mode must retain the exact rebasing protocol instead.
++      if (!preserveItems && item.step instanceof ReplaceStep &&
++          item.step.from == item.step.to && item.step.slice.content.size == 0) {
++        if (item.selection && !selection) eventCount--
++        selection = item.selection
++        lastItem = newItems.length ? newItems[newItems.length - 1] :
++          oldItems.length ? oldItems.get(oldItems.length - 1) : null
++        continue
++      }
+       newItems.push(item)
+       if (selection) {
+         eventCount++
+@@ -235,6 +249,17 @@
+   merge(other: Item) {
+     if (this.step && other.step && !other.selection) {
+       let step = other.step.merge(this.step)
++      // Undo runs `other` before `this`. Replacing exactly the closed slice produced by
++      // `other` composes to replacing its original range with `this`'s slice. Step.merge
++      // handles adjacency but not this complete-overwrite law. An insertion later deleted
++      // becomes the empty replacement; replacing existing content still keeps its range.
++      // Open/structural slices are excluded because they also change boundary structure.
++      if (!step && this.step instanceof ReplaceStep && other.step instanceof ReplaceStep &&
++          !this.step.structure && !other.step.structure &&
++          !other.step.slice.openStart && !other.step.slice.openEnd &&
++          !this.step.slice.openStart && !this.step.slice.openEnd && this.step.from == other.step.from &&
++          this.step.to == other.step.from + other.step.slice.size)
++        step = new ReplaceStep(other.step.from, other.step.to, this.step.slice)
+       if (step) return new Item(step.getMap().invert(), step, this.selection)
+     }
+   }
+@@ -281,9 +306,12 @@
+       (!appended && history.prevComposition != composition &&
+        (history.prevTime < (tr.time || 0) - options.newGroupDelay || !isAdjacentTo(tr, history.prevRanges!)))
+     let prevRanges = appended ? mapRanges(history.prevRanges!, tr.mapping) : rangesFor(tr.mapping.maps)
+-    return new HistoryState(history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined,
+-                                                      options, mustPreserveItems(state)),
+-                            Branch.empty, prevRanges, tr.time, composition == null ? history.prevComposition : composition)
++    let done = history.done.addTransform(tr, newGroup ? state.selection.getBookmark() : undefined,
++                                         options, mustPreserveItems(state))
++    let discarded = eventDiscarded(history.done, done, newGroup)
++    return new HistoryState(done, Branch.empty, discarded ? null : prevRanges,
++                            discarded ? 0 : tr.time,
++                            discarded ? -1 : composition == null ? history.prevComposition : composition)
+   } else if (rebased = tr.getMeta("rebased")) {
+     // Used by the collab module to tell the history that some of its
+     // content has been rebased.
+@@ -297,6 +325,23 @@
+   }
+ }
+ 
++// A canceled event leaves an old tail behind. Depth trimming leaves a new one.
++function eventDiscarded(before: Branch, after: Branch, newGroup: boolean) {
++  if (after.items.length > before.items.length) return false
++  let last = after.items.length ? after.items.get(after.items.length - 1) : null
++  if (after.items.length == before.items.length)
++    return newGroup && (!last || last == before.items.get(before.items.length - 1))
++  let found = !last, removed = newGroup
++  before.items.forEach(item => {
++    if (item == last) {
++      found = true
++      return false
++    }
++    if (item.selection) removed = true
++  }, before.items.length, 0)
++  return found && removed
++}
++
+ function isAdjacentTo(transform: Transform, prevRanges: readonly number[]) {
+   if (!prevRanges) return false
+   if (!transform.docChanged) return true

@@ -1,0 +1,1205 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* stylelint-disable selector-class-pattern -- third-party(ProseMirror): required upstream editor class names. */
+
+/* stylelint-disable local/no-anonymous-structural-part-selector --
+   runtime(ProseMirror contentDOM): Markdown child structure is the styling contract. */
+
+@import './theme.css';
+
+/* Layout consumers read this computed length from the owning child column. */
+
+@property --editor-block-padding-inline {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 4px;
+}
+
+.markdown-editor {
+  --editor-block-margin: 2px;
+  --editor-list-indent: 32px;
+  --editor-paragraph-padding-block: 4px;
+  --editor-font-family: ui-sans-serif, -apple-system, system-ui, 'Segoe UI Variable Display',
+    'Segoe UI', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+  --editor-monospace: 'SFMono-Regular', Menlo, Consolas, 'PT Mono', 'Liberation Mono', Courier, monospace;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100%;
+  container-type: inline-size;
+  color-scheme: var(--editor-color-scheme, light);
+  font-family: var(--editor-font-family);
+  font-size: var(--editor-font-size, 15px);
+  line-height: var(--editor-line-height, 1.4666667);
+  -webkit-font-smoothing: antialiased;
+}
+
+.markdown-editor > .ProseMirror {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  flex: 1 0 auto;
+  width: 100%;
+  max-width: var(--editor-width, 728px);
+  min-height: var(--editor-min-height, calc(100vh - 120px));
+  margin: 0 auto;
+  padding: var(--editor-padding, 24px 24px 30vh);
+  outline: none;
+  background: transparent;
+  color: var(--editor-text-color);
+  font: inherit;
+  tab-size: 4;
+}
+
+.markdown-editor .ProseMirror h1,
+.markdown-editor .ProseMirror h2,
+.markdown-editor .ProseMirror h3,
+.markdown-editor .ProseMirror h4,
+.markdown-editor .ProseMirror h5,
+.markdown-editor .ProseMirror h6 {
+  /* Unpositioned text blocks survive WebKit's IME replacement deletion (bug 321674). */
+  --editor-heading-space-before: 12px;
+  --editor-heading-padding: 6px;
+  /* Section separation stays outside the heading's selectable frame. */
+  margin: calc(var(--editor-block-margin) + var(--editor-heading-space-before)) 0 var(--editor-block-margin);
+  padding: calc(var(--editor-heading-padding) - var(--editor-block-margin)) var(--editor-block-padding-inline, 4px);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--editor-text-color);
+  cursor: text;
+}
+
+.markdown-editor .ProseMirror h1 {
+  font-size: 20px;
+}
+
+.markdown-editor .ProseMirror h2 {
+  font-size: 18px;
+}
+
+.markdown-editor .ProseMirror h3 {
+  font-size: 16px;
+}
+
+.markdown-editor .ProseMirror h4 {
+  font-size: 1em;
+}
+
+.markdown-editor .ProseMirror h5 {
+  font-size: 1em;
+  font-weight: 500;
+}
+
+.markdown-editor .ProseMirror h6 {
+  font-size: 1em;
+  font-weight: 500;
+  color: var(--editor-muted-color);
+}
+
+.markdown-editor .ProseMirror h1 .md-code-span,
+.markdown-editor .ProseMirror h2 .md-code-span,
+.markdown-editor .ProseMirror h3 .md-code-span,
+.markdown-editor .ProseMirror h4 .md-code-span,
+.markdown-editor .ProseMirror h5 .md-code-span,
+.markdown-editor .ProseMirror h6 .md-code-span {
+  font-size: inherit;
+}
+
+.markdown-editor .ProseMirror p {
+  margin: var(--editor-block-margin) 0;
+  /* Flex block stacks prevent the outer gap from collapsing into adjacent margins. */
+  padding:
+    calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin))
+    var(--editor-block-padding-inline, 4px);
+}
+
+/* Text blocks own their inline inset in every child stack. Containers establish
+   a column; they never reset the padding of a paragraph that enters that column. */
+
+.markdown-editor .ProseMirror blockquote {
+  display: grid;
+  grid-template-columns: var(--editor-quote-indent, 24px) minmax(0, 1fr);
+  margin: var(--editor-block-margin) 0;
+  padding-block: calc(8px - var(--editor-block-margin));
+  padding-inline: 0;
+  border: 0;
+  color: var(--editor-text-color);
+}
+
+/* The inset rule belongs to the quote's frame, not to the editable first paragraph. */
+
+.markdown-editor .ProseMirror blockquote::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1;
+  margin-left: var(--editor-block-padding-inline, 4px);
+  margin-block: var(--editor-block-margin);
+  width: 3px;
+  border-radius: 2px;
+  background: var(--editor-quote-border);
+  pointer-events: none;
+}
+
+.markdown-editor .ProseMirror .md-quote-content {
+  grid-column: 2;
+  grid-row: 1;
+  /* The quote's first baseline is its text's. Without a baseline item the grid would take
+     the rule's, the bottom of an empty box, and a list marker beside the quote would sink. */
+  align-self: first baseline;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.markdown-editor .ProseMirror blockquote > :first-child,
+.markdown-editor .ProseMirror .md-quote-content > :first-child {
+  margin-top: var(--editor-heading-space-before, 0px);
+}
+
+.markdown-editor .ProseMirror blockquote > :last-child,
+.markdown-editor .ProseMirror .md-quote-content > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-editor .ProseMirror .md-callout-frame {
+  margin: 6px 0;
+  padding: 0 var(--editor-block-padding-inline, 4px);
+  min-width: 0;
+}
+
+.markdown-editor .ProseMirror .md-callout-frame > aside.md-callout {
+  margin: 0;
+}
+
+.markdown-editor .ProseMirror aside.md-callout {
+  --callout-color: var(--editor-callout-note-color);
+  --callout-background: var(--editor-callout-note-bg);
+  --editor-paragraph-padding-block: 4px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 6px var(--editor-block-padding-inline, 4px);
+  padding: 5px 9px 5px 8px;
+  border: 0;
+  border-left: 4px solid var(--callout-color);
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--callout-color) 12%, var(--callout-background));
+  background: var(--callout-background);
+  color: var(--editor-text-color);
+}
+
+.markdown-editor .ProseMirror aside.md-callout-tip {
+  --callout-color: var(--editor-callout-tip-color);
+  --callout-background: var(--editor-callout-tip-bg);
+}
+
+.markdown-editor .ProseMirror aside.md-callout-important {
+  --callout-color: var(--editor-callout-important-color);
+  --callout-background: var(--editor-callout-important-bg);
+}
+
+.markdown-editor .ProseMirror aside.md-callout-warning {
+  --callout-color: var(--editor-callout-warning-color);
+  --callout-background: var(--editor-callout-warning-bg);
+}
+
+.markdown-editor .ProseMirror aside.md-callout-caution {
+  --callout-color: var(--editor-callout-caution-color);
+  --callout-background: var(--editor-callout-caution-bg);
+}
+
+.markdown-editor .ProseMirror .md-callout-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding-inline: var(--editor-block-padding-inline, 4px);
+  color: var(--callout-color);
+  font-weight: 600;
+}
+
+.markdown-editor .ProseMirror .md-callout-type-control {
+  position: relative;
+  order: -1;
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  align-self: start;
+  width: 20px;
+  height: 20px;
+  margin-block: calc(4px + (1lh - 20px) / 2);
+  border-radius: 4px;
+  user-select: none;
+}
+
+.markdown-editor .ProseMirror .md-callout-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  pointer-events: none;
+}
+
+/* The native control covers the icon without reserving another label or changing text geometry. */
+
+.markdown-editor .ProseMirror .md-callout-type {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.markdown-editor .ProseMirror .md-callout-type-control:hover {
+  background: color-mix(in srgb, var(--callout-color) 9%, transparent);
+}
+
+.markdown-editor .ProseMirror .md-callout-type-control:has(:focus-visible) {
+  outline: 2px solid var(--callout-color);
+  outline-offset: 2px;
+}
+
+.markdown-editor .ProseMirror .md-callout-title {
+  position: relative;
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 1lh;
+  padding: 4px 0;
+  line-height: inherit;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+/* Out-of-flow default text leaves the empty field's native caret and hit-test geometry intact. */
+
+.markdown-editor .ProseMirror .md-callout-title[data-placeholder]::before {
+  position: absolute;
+  inset-inline-start: 0;
+  content: attr(data-placeholder);
+  pointer-events: none;
+  user-select: none;
+}
+
+.markdown-editor .ProseMirror aside.md-callout > :last-child {
+  margin-bottom: 0;
+}
+
+/* A body relinquishes its final outer margin to the container. Keep that space
+   on the container whether the last child is a paragraph or a list. */
+
+.markdown-editor .ProseMirror aside.md-callout:has(> .md-callout-heading ~ *) {
+  padding-bottom: calc(5px + var(--editor-block-margin));
+}
+
+.markdown-editor .ProseMirror ul,
+.markdown-editor .ProseMirror ol {
+  display: flex;
+  flex-direction: column;
+  margin: var(--editor-block-margin) 0;
+  padding: 0;
+  list-style: none;
+}
+
+.markdown-editor .ProseMirror li {
+  display: grid;
+  grid-template-columns: var(--editor-list-indent) minmax(0, 1fr);
+  align-items: first baseline;
+  counter-increment: list-item;
+  list-style: none;
+  margin: var(--editor-block-margin) 0;
+  padding: 0;
+}
+
+/* All marker ink ends 8px before the body column: numbers, bullets and task
+   checkboxes share this boundary, leaving room for the first child's handle.
+   Grid's first-baseline alignment follows the body's actual first line, including
+   a heading, quote or nested-list head. Generated markers never enter editable text. */
+
+.markdown-editor .ProseMirror li:not(.task-list-item)::before {
+  content: ' ';
+  white-space: pre;
+  grid-column: 1;
+  grid-row: 1;
+  margin-left: calc(var(--editor-list-indent) - 28px);
+  width: 20px;
+  text-align: right;
+  color: var(--editor-text-color);
+  pointer-events: none;
+}
+
+.markdown-editor .ProseMirror ul > li:not(.task-list-item)::before {
+  /* The same solid bullet is used at every nesting level. Keep its optical
+     size explicit instead of depending on disc/circle/square font fallbacks.
+     The generated space supplies the text baseline; the circle does not size
+     the line box or move the text when a paragraph becomes a list item. */
+  background-image: radial-gradient(circle closest-side, currentColor 90%, transparent 100%);
+  background-size: 6px 6px;
+  background-position: right center;
+  background-repeat: no-repeat;
+}
+
+.markdown-editor .ProseMirror ol > li:not(.task-list-item)::before {
+  /* Retain native counter arithmetic, including ol[start]. */
+  content: counter(list-item) '.';
+}
+
+.markdown-editor .ProseMirror .md-list-item-content {
+  grid-column: 2;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* A shell absorbs the ordinary block gap; heading section separation remains in the heading's margin. */
+
+.markdown-editor .ProseMirror :is(ul, ol, .md-list-item-content) > :first-child {
+  margin-top: var(--editor-heading-space-before, 0px);
+}
+
+.markdown-editor .ProseMirror :is(ul, ol, .md-list-item-content) > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-editor .ProseMirror li.task-list-item {
+  position: relative;
+}
+
+.markdown-editor .ProseMirror li.task-list-item > .task-list-checkbox {
+  position: absolute;
+  left: calc(var(--editor-list-indent) - 24px);
+  width: 16px;
+  height: 16px;
+  /* Center the marker on the first text line, using that line's inherited
+     height and paragraph inset instead of a separate task-row measurement. */
+  top: calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin) + 0.5lh - 8px);
+  margin: 0;
+  accent-color: var(--editor-link-color);
+  cursor: pointer;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.markdown-editor .ProseMirror .task-list-checkbox > input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  appearance: none;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--editor-muted-color);
+  border-radius: 5px;
+  background-color: transparent;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+}
+
+.markdown-editor .ProseMirror .task-list-checkbox > input:checked {
+  background-color: var(--editor-link-color);
+  border-color: var(--editor-link-color);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'\
+    viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5'\
+    stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 4 4L19 6'/%3E%3C/svg%3E");
+  background-size: 14px 14px;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.markdown-editor .ProseMirror .task-list-checkbox > input:focus-visible {
+  outline: 2px solid var(--editor-link-color);
+  outline-offset: 2px;
+}
+
+.markdown-editor .ProseMirror .task-list-item:is([data-checked='true'], :has(> .task-list-checkbox:checked))
+  > .task-list-content > p:first-child {
+  color: var(--editor-subtle-color);
+  text-decoration: line-through;
+}
+
+.markdown-editor .ProseMirror hr {
+  height: 1px;
+  padding: 0;
+  margin: 6px var(--editor-block-padding-inline, 4px);
+  border: 0;
+  background: var(--editor-border-color);
+  overflow: hidden;
+}
+
+.markdown-editor .ProseMirror .md-divider {
+  margin: 6px 0;
+  padding: 0 var(--editor-block-padding-inline, 4px);
+}
+
+.markdown-editor .ProseMirror .md-divider > hr {
+  margin: 0;
+}
+
+.markdown-editor .ProseMirror pre {
+  margin: 8px var(--editor-block-padding-inline, 4px);
+  padding: 20px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--editor-code-bg);
+  color: var(--editor-text-color);
+  font-family: var(--editor-monospace);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-x: auto;
+}
+
+.markdown-editor .ProseMirror pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+/* The wrapper scrolls; table cells retain native table layout and ProseMirror hit testing. */
+
+.markdown-editor .ProseMirror .tableWrapper {
+  /* Align the table surface with text; reserve the 12px add-column control and
+     its 4px gap independently of the shared block inset. */
+  max-width: calc(100% - 2 * var(--editor-block-padding-inline, 4px) - 16px);
+  margin: 0 var(--editor-block-padding-inline, 4px);
+  /* The outer frame owns the unpainted block gap; keep the total vertical rhythm. */
+  padding: calc(8px - var(--editor-block-margin)) 0 calc(16px - var(--editor-block-margin));
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.markdown-editor .ProseMirror table {
+  /* A column is as wide as what is in it, and the table as wide as its columns. The browser
+     lays it out; nothing measures it. */
+  width: max-content;
+  margin: 16px var(--editor-block-padding-inline, 4px);
+  border-collapse: collapse;
+  table-layout: auto;
+  color: var(--editor-text-color);
+  font-size: 14px;
+  /* Unitless line-height lets concealed delimiters at font-size:0 contribute no line-box height. */
+  line-height: 1.5;
+}
+
+.markdown-editor .ProseMirror .tableWrapper > table {
+  margin: 0;
+}
+
+.markdown-editor .ProseMirror th,
+.markdown-editor .ProseMirror td {
+  --editor-block-padding-inline: 2px;
+  box-sizing: border-box;
+  position: relative;
+  /* The two limits on a column. Past the larger one the text of a cell wraps. */
+  min-width: 160px;
+  max-width: 500px;
+  padding: 3px 6px;
+  border: 1px solid var(--editor-border-color);
+  /* A cell holds one paragraph, so baseline is top; it also gives the table the first row's
+     baseline, where a row of top-aligned cells gives the bottom of its first cell. */
+  vertical-align: baseline;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.markdown-editor .ProseMirror th {
+  background: var(--editor-table-header-bg);
+  font-weight: 500;
+}
+
+.markdown-editor .ProseMirror td > p,
+.markdown-editor .ProseMirror th > p {
+  /* A cell contains a paragraph with these insets. Preserve the composed
+     spacing, not just the outer td rule. */
+  margin: 1px 0;
+  padding: 3px var(--editor-block-padding-inline);
+}
+
+.markdown-editor .ProseMirror .selectedCell::after {
+  content: '';
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  background: var(--editor-selection-bg);
+  pointer-events: none;
+}
+
+.markdown-editor .ProseMirror .column-resize-handle {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  right: -2px;
+  bottom: 0;
+  width: 4px;
+  background: var(--editor-link-color);
+  pointer-events: none;
+}
+
+.markdown-editor .ProseMirror.resize-cursor {
+  cursor: col-resize;
+}
+
+.markdown-editor .ProseMirror .md-inline-math {
+  color: var(--editor-text-color);
+  font-family: var(--editor-monospace);
+}
+
+.markdown-editor .ProseMirror .md-math-preview {
+  color: var(--editor-text-color);
+  white-space: normal;
+}
+
+.markdown-editor .ProseMirror .md-math-preview .katex {
+  font-size: 1.05em;
+}
+
+/* Editing keeps a live result after the closing delimiter; the gap is visual, not source text. */
+
+.markdown-editor .ProseMirror .md-math-live-preview {
+  margin-inline: 0.5em;
+}
+
+/* Keep the full TeX range mapped in the DOM while its sibling widget paints the formula. */
+
+.markdown-editor .ProseMirror .md-math-block {
+  margin: var(--editor-block-margin) 0;
+  padding: calc(8px - var(--editor-block-margin)) var(--editor-block-padding-inline, 4px);
+}
+
+.markdown-editor .ProseMirror .md-math-block > .md-math-preview {
+  padding: 4px 0;
+  overflow-x: auto;
+  color: var(--editor-text-color);
+  white-space: normal;
+  cursor: text;
+}
+
+.markdown-editor .ProseMirror .md-math-block .katex {
+  font-size: 1.21em;
+}
+
+.markdown-editor .ProseMirror .md-math-preview .katex-display {
+  margin: 1em 0;
+}
+
+.markdown-editor .ProseMirror .md-math-block .md-math-source {
+  margin: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--editor-border-color);
+  border-radius: 6px;
+  background: transparent;
+}
+
+/* The contentDOM remains mounted. Selection activates the source beside the persistent preview. */
+
+.markdown-editor .ProseMirror .md-math-block:not(.md-math-editing) > .md-math-source {
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  font-size: 0;
+  line-height: 0;
+}
+
+.markdown-editor .ProseMirror .md-strong-emphasis {
+  font-weight: 700;
+}
+
+.markdown-editor .ProseMirror .md-emphasis {
+  font-style: italic;
+}
+
+.markdown-editor .ProseMirror .md-strikethrough {
+  text-decoration: line-through;
+}
+
+.markdown-editor .ProseMirror .md-code-span {
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--editor-text-color) 5%, transparent);
+  color: var(--editor-text-color);
+  font-family: var(--editor-monospace);
+  font-size: 0.85em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.markdown-editor .ProseMirror .md-highlight {
+  padding: 0.06em 0;
+  border-radius: 2px;
+  background: var(--editor-highlight-bg);
+  color: inherit;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.markdown-editor .ProseMirror .md-tag {
+  padding: 0.1em 0.38em;
+  border-radius: 1em;
+  background: var(--editor-tag-bg);
+  color: var(--editor-tag-color);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.markdown-editor .ProseMirror .md-tag::before {
+  content: '#';
+  margin-right: 0.22em;
+  color: var(--editor-tag-marker-color);
+  font-weight: 500;
+}
+
+/* While a tag is revealed its own marker is shown, and the drawn one would be a second. */
+
+.markdown-editor .ProseMirror .md-tag:has(.md-revealed)::before {
+  content: none;
+}
+
+.markdown-editor .ProseMirror .md-tag-slash {
+  color: var(--editor-tag-slash-color);
+}
+
+.markdown-editor .ProseMirror .md-emoji-preview {
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  /* Emoji fonts have different ascent/descent metrics from the surrounding text.
+     Their preview occupies one em inside the paragraph's line, not a second
+     full-height strut that lifts the row while the shortcode is collapsed. */
+  line-height: 1;
+}
+
+/* The editable shortcode stays in .md-meta. Only its noneditable preview disappears on reveal. */
+
+.markdown-editor .ProseMirror .md-emoji-shortcode.md-revealed > .md-emoji-preview,
+.markdown-editor .ProseMirror .md-emoji-shortcode:has(.md-revealed) > .md-emoji-preview,
+.markdown-editor .ProseMirror .md-revealed .md-emoji-shortcode > .md-emoji-preview {
+  display: none;
+}
+
+.markdown-editor .ProseMirror :is(.md-inline-link, .md-full-reference-link, .md-collapsed-reference-link,
+  .md-shortcut-reference-link, .md-autolink, .md-literal-autolink),
+.markdown-editor .ProseMirror .md-wikilink {
+  color: var(--editor-link-color);
+  text-decoration: underline;
+  text-decoration-color: var(--editor-link-underline-color);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+
+.markdown-editor .ProseMirror :is(.md-inline-link, .md-full-reference-link, .md-collapsed-reference-link,
+  .md-shortcut-reference-link, .md-autolink, .md-literal-autolink):hover,
+.markdown-editor .ProseMirror .md-wikilink:hover {
+  text-decoration-color: currentColor;
+}
+
+.markdown-editor .ProseMirror :is(.md-inline-image, .md-full-reference-image,
+  .md-collapsed-reference-image, .md-shortcut-reference-image) {
+  color: transparent;
+  font-size: 0;
+}
+
+.markdown-editor .ProseMirror .md-image-object {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+
+/* Image controls are outside the editable DOM and follow the image's viewport rectangle. */
+
+.md-image-resize {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.md-image-resize[hidden] {
+  display: none;
+}
+
+.md-image-resizer-container {
+  position: absolute;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  width: 15px;
+  cursor: col-resize;
+  pointer-events: auto;
+  touch-action: none;
+  user-select: none;
+}
+
+.md-image-resizer-container--left {
+  left: 0;
+}
+
+.md-image-resizer-container--right {
+  right: 0;
+}
+
+.md-image-resizer {
+  box-sizing: border-box;
+  border-radius: 20px;
+  background: rgba(15, 15, 15, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  width: 6px;
+  height: 48px;
+  max-height: 50%;
+}
+
+/* An image that could not be loaded: a small framed place that shows its alt text. */
+
+.markdown-editor .ProseMirror .md-image-object.md-image-broken {
+  min-width: 1.5em;
+  min-height: 1.5em;
+  padding: 2px 6px;
+  border: 1px dashed var(--editor-border-color);
+  color: var(--editor-subtle-color);
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.markdown-editor .ProseMirror .md-image-part-alt,
+.markdown-editor .ProseMirror .md-image-part-title,
+.markdown-editor .ProseMirror .md-image-part-reference {
+  color: var(--editor-text-color);
+}
+
+.markdown-editor .ProseMirror .md-image-part-src {
+  color: var(--editor-link-color);
+}
+
+.markdown-editor .ProseMirror :is(.md-inline-link, .md-full-reference-link, .md-collapsed-reference-link,
+  .md-shortcut-reference-link, .md-autolink, .md-literal-autolink)[data-resolved='false'] {
+  color: var(--editor-subtle-color);
+  text-decoration-style: dotted;
+}
+
+.markdown-editor .ProseMirror :is(.md-raw-html, .md-html-comment, .md-html-line-break, .md-html-image) {
+  color: var(--editor-subtle-color);
+}
+
+/* The source of a concealed constituent that has a stand-in in its place: a formula, an image
+   written as a tag. It stays in the document for selection and editing. */
+
+.markdown-editor .ProseMirror .md-concealed,
+.markdown-editor .ProseMirror .md-concealed * {
+  color: transparent;
+  font-size: 0;
+}
+
+.markdown-editor .ProseMirror .md-character-reference {
+  color: inherit;
+}
+
+.markdown-editor .ProseMirror .md-character-reference::before {
+  content: attr(data-decoded);
+  color: var(--editor-text-color);
+}
+
+/* Zero-size source spans remain in the document for selection and editing; do not use display:none. */
+
+.markdown-editor .ProseMirror .md-meta,
+.markdown-editor .ProseMirror .md-link {
+  color: transparent;
+  font-size: 0;
+}
+
+.markdown-editor .ProseMirror .md-revealed {
+  color: var(--editor-subtle-color);
+  font-size: inherit;
+}
+
+.markdown-editor .ProseMirror .md-atx-closing {
+  color: var(--editor-subtle-color);
+  font-size: inherit;
+}
+
+.markdown-editor .ProseMirror .md-meta.md-revealed,
+.markdown-editor .ProseMirror .md-link.md-revealed,
+.markdown-editor .ProseMirror :is(.md-inline-image, .md-full-reference-image,
+  .md-collapsed-reference-image, .md-shortcut-reference-image).md-revealed,
+.markdown-editor .ProseMirror .md-meta:has(.md-revealed),
+.markdown-editor .ProseMirror .md-link:has(.md-revealed),
+.markdown-editor .ProseMirror :is(.md-inline-image, .md-full-reference-image,
+  .md-collapsed-reference-image, .md-shortcut-reference-image):has(.md-revealed),
+.markdown-editor .ProseMirror .md-revealed .md-meta,
+.markdown-editor .ProseMirror .md-revealed .md-link,
+.markdown-editor .ProseMirror .md-revealed :is(.md-inline-image, .md-full-reference-image,
+  .md-collapsed-reference-image, .md-shortcut-reference-image),
+.markdown-editor .ProseMirror .md-meta .md-revealed,
+.markdown-editor .ProseMirror .md-link .md-revealed,
+.markdown-editor .ProseMirror :is(.md-inline-image, .md-full-reference-image,
+  .md-collapsed-reference-image, .md-shortcut-reference-image) .md-revealed {
+  color: var(--editor-subtle-color);
+  font-size: inherit;
+}
+
+/* Pending syntax is identified by frontier marks; no decoration reads it again. */
+
+.markdown-editor .ProseMirror .md-meta:has(> .md-pending-syntax:not(.md-pending-html-block)),
+.markdown-editor .ProseMirror .md-pending-syntax:not(.md-pending-html-block) > .md-meta,
+.markdown-editor .ProseMirror .md-meta.md-atx-closing,
+.markdown-editor .ProseMirror .md-meta:has(.md-atx-closing),
+.markdown-editor .ProseMirror .md-atx-closing .md-meta,
+.markdown-editor .ProseMirror .md-meta .md-atx-closing {
+  color: var(--editor-subtle-color);
+  font-size: inherit;
+}
+
+/* HTML source is colored token by token: the brackets, the tag name, attribute names and
+   values, and comments. These colors also win when reveal shares the token span.
+   Text between tags keeps the color of what holds it. */
+
+.markdown-editor .ProseMirror .md-html-punctuation,
+.markdown-editor .ProseMirror .md-html-punctuation.md-revealed {
+  color: var(--editor-html-punctuation-color);
+}
+
+.markdown-editor .ProseMirror .md-html-name,
+.markdown-editor .ProseMirror .md-html-name.md-revealed {
+  color: var(--editor-html-name-color);
+}
+
+.markdown-editor .ProseMirror .md-html-attribute,
+.markdown-editor .ProseMirror .md-html-attribute.md-revealed {
+  color: var(--editor-html-attribute-color);
+}
+
+.markdown-editor .ProseMirror .md-html-value,
+.markdown-editor .ProseMirror .md-html-value.md-revealed {
+  color: var(--editor-html-value-color);
+}
+
+/* A line break tag stays in view, but only just: the line break after it is what it is for. */
+
+.markdown-editor .ProseMirror .md-html-faint,
+.markdown-editor .ProseMirror .md-html-faint.md-revealed {
+  color: var(--editor-html-faint-color);
+}
+
+.markdown-editor .ProseMirror .md-html-comment,
+.markdown-editor .ProseMirror .md-html-comment.md-revealed {
+  color: var(--editor-html-comment-color);
+  font-style: italic;
+}
+
+.markdown-editor .ProseMirror .md-html-block {
+  margin: 1em 0;
+  padding: 0 var(--editor-block-padding-inline, 4px);
+  border: 0;
+  border-radius: 0;
+  color: var(--editor-subtle-color);
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markdown-editor .ProseMirror .md-link-definition {
+  margin: var(--editor-block-margin) 0;
+  padding: calc(8px - var(--editor-block-margin)) var(--editor-block-padding-inline, 4px);
+  display: block;
+  color: var(--editor-text-color);
+  font-size: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Inline fields keep native vertical caret movement on the definition's visual line. */
+
+.markdown-editor .ProseMirror .md-link-definition-head {
+  display: inline;
+  white-space: pre-wrap;
+}
+
+/* A trailing noneditable delimiter in inline-flex can collapse Chromium's visible selection
+ * while its DOM Range remains nonempty. Keep title text and delimiters in inline flow. */
+
+.markdown-editor .ProseMirror .md-link-definition-title {
+  display: inline;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-destination {
+  display: inline;
+  white-space: inherit;
+  word-break: inherit;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-shell {
+  color: var(--editor-subtle-color);
+  white-space: pre;
+  flex-shrink: 0;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-content,
+.markdown-editor .ProseMirror .md-link-definition-destination-content,
+.markdown-editor .ProseMirror .md-link-definition-title-content {
+  display: inline;
+  white-space: inherit;
+  word-break: inherit;
+  color: var(--editor-text-color);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An empty field holds the break that ProseMirror puts into an empty textblock, and the caret
+ * stands on it: hiding the break leaves the caret nowhere to be, and the selection leaves the
+ * definition. In a field laid out inline the break would also start a new line and push the
+ * field's closing delimiter onto it. An empty field is therefore a box of its own, and the break
+ * ends a line inside that box. */
+
+.markdown-editor .ProseMirror .md-link-definition-head-content:has(> br.ProseMirror-trailingBreak:only-child),
+.markdown-editor .ProseMirror .md-link-definition-destination-content:has(> br.ProseMirror-trailingBreak:only-child),
+.markdown-editor .ProseMirror .md-link-definition-title-content:has(> br.ProseMirror-trailingBreak:only-child) {
+  display: inline-block;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-prefix {
+  margin-right: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-content {
+  min-width: 0.5ch;
+  font-weight: 600;
+  color: var(--editor-link-color);
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-suffix {
+  display: inline-flex;
+  align-items: baseline;
+  margin-left: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-close {
+  margin-right: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-head-colon {
+  margin-right: 0.18em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-destination-content {
+  color: var(--editor-link-color);
+  font-family: var(--editor-monospace);
+  font-size: 0.93em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-title-content {
+  display: inline;
+  min-width: 1px;
+  padding: 0;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-title-open {
+  display: inline-flex;
+  align-items: baseline;
+  margin-left: 0.12em;
+  margin-right: 0.04em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-title-gap {
+  min-width: 0.44em;
+}
+
+.markdown-editor .ProseMirror .md-link-definition-title-close {
+  margin-left: 0.04em;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition {
+  margin: var(--editor-block-margin) 0;
+  padding-block: calc(8px - var(--editor-block-margin));
+  padding-inline: var(--editor-block-padding-inline, 4px) 0;
+  color: var(--editor-text-color);
+  font-size: inherit;
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  align-items: start;
+  gap: 4px;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition > .md-footnote-definition-head {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition > :not(.md-footnote-definition-head) {
+  grid-column: 2;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-head {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  padding-top: calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin));
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition .md-footnote-definition,
+.markdown-editor .ProseMirror .md-footnote-definition .md-link-definition {
+  font-size: inherit;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-body > :first-child {
+  margin-top: var(--editor-heading-space-before, 0px);
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-prefix,
+.markdown-editor .ProseMirror .md-footnote-definition-suffix,
+.markdown-editor .ProseMirror .md-footnote-definition-separator {
+  color: var(--editor-subtle-color);
+  flex-shrink: 0;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-prefix {
+  margin-right: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-suffix {
+  display: inline-flex;
+  align-items: baseline;
+  margin-left: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-close {
+  margin-right: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-colon {
+  margin-right: 0.06em;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition-identifier {
+  color: var(--editor-link-color);
+  min-width: 0.5ch;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.markdown-editor .ProseMirror .md-definition-meta {
+  color: var(--editor-subtle-color);
+}
+
+.markdown-editor .ProseMirror .md-footnote-reference {
+  color: var(--editor-link-color);
+  font-size: 0.78em;
+  line-height: 0;
+  vertical-align: super;
+}
+
+.markdown-editor .ProseMirror:not(.ProseMirror-hideselection)::selection,
+.markdown-editor .ProseMirror:not(.ProseMirror-hideselection) ::selection {
+  background: var(--editor-selection-bg);
+}
+
+/* Structured pointer selections paint their own ranges. The browser may still retain or
+   extend the preceding native text range while PM defers selectionToDOM for a mouse drag.
+   Disable that native surface for the owned gesture, without changing any content geometry. */
+
+.markdown-editor .ProseMirror[data-pointer-selection='model'] {
+  user-select: none;
+  caret-color: transparent;
+}
+
+.markdown-editor .ProseMirror[data-pointer-selection='model']::selection,
+.markdown-editor .ProseMirror[data-pointer-selection='model'] ::selection {
+  background: transparent;
+}
+
+/* NodeView buttons retain browser keyboard activation and own their complete styling. */
+
+:where(.markdown-editor) :where(.code-language-button, .callout-type-button, .frontmatter-type-button,
+  .frontmatter-add-button, .frontmatter-header button) {
+  appearance: none;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+
+:where(.markdown-editor) :where(.code-language-button, .callout-type-button, .frontmatter-type-button,
+  .frontmatter-add-button, .frontmatter-header button):disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+:where(.markdown-editor) :where(.code-language-button, .callout-type-button, .frontmatter-type-button,
+  .frontmatter-add-button, .frontmatter-header button):focus-visible {
+  outline: 2px solid var(--editor-selection-border);
+  outline-offset: 2px;
+}
+
+:where(.markdown-editor) :where(.code-language-button, .frontmatter-type-button,
+  .frontmatter-add-button, .frontmatter-header button):hover {
+  background: var(--editor-table-header-bg);
+}
+
+.callout-type-button {
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  color: var(--callout-color);
+}
+
+.callout-type-button > svg {
+  width: 16px;
+  height: 16px;
+}
+
+.callout-type-button:hover {
+  color: var(--callout-color);
+  background: transparent;
+}
+
+.markdown-editor > .ProseMirror > :is(h1, h2, h3, h4, h5, h6):first-child {
+  --editor-heading-space-before: 0px;
+  padding-top: calc(4px - var(--editor-block-margin));
+}
+
+@container (max-width: 420px) {
+  .markdown-editor > .ProseMirror {
+    padding-inline: var(--editor-padding-inline, 16px);
+  }
+}
+
+.markdown-editor .ProseMirror .md-tag .md-meta.md-revealed {
+  color: var(--editor-tag-edit-marker-color);
+}

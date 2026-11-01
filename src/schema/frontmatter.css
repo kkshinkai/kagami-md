@@ -1,0 +1,225 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.markdown-editor .md-frontmatter {
+  /* Properties are data, not prose: they are set as a table's cells are, at 14px, in rows
+     with their own small inset rather than a paragraph's. Entries keep a gap, so that
+     selected entries are painted as separate blocks. */
+  --yaml-key-width: 120px;
+  --yaml-entry-gap: 2px;
+  --yaml-type-column: 22px;
+  --yaml-collection-inset: 12px;
+  --yaml-row-padding: 1px;
+  position: relative;
+  margin: 0 0 12px;
+  padding: 0 0 8px;
+  border-bottom: 1px solid var(--editor-border-color);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.md-frontmatter [hidden] { display: none !important; }
+.md-frontmatter-heading {
+  padding: 0 var(--editor-block-padding-inline, 4px) 2px;
+  color: var(--editor-muted-color);
+  font-size: 12px;
+  font-weight: 500;
+  user-select: none;
+}
+
+.frontmatter-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.frontmatter-header-actions { display: flex; align-items: center; gap: 2px; }
+.markdown-editor .frontmatter-header button {
+  height: 22px;
+  padding: 0 4px;
+  color: var(--editor-muted-color);
+  font-size: 12px;
+}
+.markdown-editor .frontmatter-header button svg { width: 13px; height: 13px; }
+.frontmatter-disclosure svg { transition: transform 120ms ease; }
+.frontmatter-disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+.frontmatter-source-error {
+  flex-basis: 100%;
+  color: var(--editor-callout-caution-color, #c33);
+  font-weight: 400;
+}
+
+.markdown-editor .md-frontmatter-yaml-source,
+.markdown-editor .ProseMirror .md-frontmatter-source {
+  margin: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--editor-border-color);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+}
+.md-frontmatter-yaml-source { overflow: hidden; }
+.md-frontmatter-yaml-source .cm-editor { background: transparent; }
+.md-frontmatter-yaml-source .cm-focused { outline: none; }
+.md-frontmatter-yaml-source .cm-scroller {
+  font-family: var(--editor-monospace);
+  line-height: 1.5;
+}
+.md-frontmatter-yaml-source .cm-content { padding-block: 0; }
+.md-frontmatter-yaml-source .cm-gutters {
+  border-color: var(--editor-border-color);
+  background: transparent;
+  color: var(--editor-subtle-color);
+}
+
+.markdown-editor :is(.md-yaml-property, .md-yaml-item) {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--yaml-type-column) minmax(0, 1fr);
+  align-items: first baseline;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--block-selection-radius, 6px);
+}
+
+/* Collections own sibling separation once. Their first item starts at the
+   collection edge, even when another collection is the item's entire value. */
+.md-yaml-map, .md-yaml-array, .md-yaml-entries {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.md-yaml-map, .md-yaml-array, .md-yaml-entries { gap: var(--yaml-entry-gap); }
+.md-yaml-entries:empty { display: none; }
+.md-yaml-entry-content {
+  grid-column: 2;
+  grid-row: 1;
+  display: grid;
+  grid-template-columns: minmax(72px, var(--yaml-key-width)) minmax(0, 1fr);
+  column-gap: 12px;
+  min-width: 0;
+  align-items: first baseline;
+}
+/* A property owns a key row: a value that wraps or holds a collection must not pull the key
+   down to its own baseline. The outer grid still aligns the type to the key's first line;
+   headless array items keep inheriting their value's baseline. */
+.md-yaml-property > .md-yaml-entry-content { align-items: start; }
+.md-yaml-item > .md-yaml-entry-content { grid-template-columns: minmax(0, 1fr); }
+.md-yaml-entry-content:has(> :is(.md-yaml-map, .md-yaml-array)) {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--yaml-entry-gap);
+}
+.md-yaml-entry-content > :is(.md-yaml-map, .md-yaml-array) { padding-inline-start: var(--yaml-collection-inset); }
+
+/* The non-editable slot exports a real text baseline to the entry grid. Its
+   control is centered on that line without contributing button height to it.
+   First-baseline alignment propagates through nested grids and child stacks;
+   no accumulated depth offset or fixed top value is involved. */
+.md-yaml-type {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  display: block;
+  width: 18px;
+  margin-inline-start: 2px;
+}
+.md-yaml-type::before, .md-yaml-add::before { content: ' '; white-space: pre; }
+.md-yaml-type > *, .md-yaml-add > * {
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.markdown-editor .frontmatter-type-button {
+  width: 18px;
+  min-width: 0;
+  height: 20px;
+  min-height: 0;
+  padding: 3px 2px;
+  border-radius: 4px;
+  color: var(--editor-subtle-color);
+}
+.markdown-editor .frontmatter-type-button svg { width: 13px; height: 13px; }
+
+.md-yaml-key, .md-yaml-scalar {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 1lh;
+  padding: var(--yaml-row-padding) var(--editor-block-padding-inline, 4px);
+  line-height: inherit;
+  white-space: pre-wrap;
+}
+.md-yaml-key { color: var(--editor-muted-color); }
+.md-yaml-key:has(> br:only-child)::before {
+  position: absolute;
+  content: attr(data-placeholder);
+  color: var(--editor-subtle-color);
+  pointer-events: none;
+}
+.md-yaml-number, .md-yaml-boolean, .md-yaml-null { font-variant-numeric: tabular-nums; }
+.md-yaml-null { color: var(--editor-subtle-color); }
+
+/* Empty and populated collections expose the same first-row baseline. The
+   append control has its own row after the item stack, never a child margin. */
+.md-yaml-add {
+  position: relative;
+  padding-block: var(--yaml-row-padding);
+}
+.markdown-editor .frontmatter-add-button {
+  height: 20px;
+  min-height: 0;
+  padding: 0 4px;
+  gap: 4px;
+  color: var(--editor-subtle-color);
+  font-size: 12px;
+  font-weight: 400;
+}
+.markdown-editor .frontmatter-add-button svg { width: 12px; height: 12px; }
+
+/* A real line baseline keeps the atomic value aligned with keys and text values. */
+.md-yaml-boolean { position: relative; }
+.md-yaml-boolean::before { content: ' '; white-space: pre; }
+.md-yaml-boolean-control {
+  position: absolute;
+  inset-inline-start: var(--editor-block-padding-inline, 4px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+}
+.md-yaml-boolean.ProseMirror-selectednode { outline: none; }
+.md-yaml-boolean.ProseMirror-selectednode .md-yaml-boolean-control {
+  outline: 2px solid var(--editor-link-color);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.md-yaml-boolean-control > input {
+  appearance: none;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--editor-muted-color);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.md-yaml-boolean-control > input:checked {
+  background: var(--editor-link-color) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 4 4L19 6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  border-color: var(--editor-link-color);
+}
+.md-yaml-boolean-control > input:focus-visible { outline: 2px solid var(--editor-link-color); outline-offset: 2px; }
+
+/* A zero-size prefix must not contribute a full inherited line-height strut. */
+.md-yaml-literal-prefix { line-height: 0; }
+.md-yaml-literal-prefix.md-revealed { line-height: inherit; }
+
+@media (max-width: 520px) {
+  .markdown-editor .md-frontmatter { --yaml-key-width: 96px; }
+  .md-yaml-entry-content { column-gap: 6px; }
+}

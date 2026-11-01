@@ -1,0 +1,81 @@
+{
+  "name": "kagami-md",
+  "version": "0.0.0-alpha.1",
+  "license": "MPL-2.0",
+  "author": "Kk Shinkai <i@shinkai.moe>",
+  "homepage": "https://kkshinkai.github.io/kagami-md/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kkshinkai/kagami-md.git"
+  },
+  "bugs": "https://github.com/kkshinkai/kagami-md/issues",
+  "type": "module",
+  "packageManager": "pnpm@10.25.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "exports": {
+    ".": {
+      "kagami:source": "./src/index.ts",
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/kagami-md.js"
+    },
+    "./styles.css": {
+      "kagami:source": "./src/styles.css",
+      "default": "./dist/styles.css"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSES"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "scripts": {
+    "build": "vite build && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fontsource/open-sans": "5.3.0",
+    "debug": "4.4.3",
+    "gemoji": "8.1.0",
+    "katex": "0.18.7",
+    "prosemirror-commands": "1.7.1",
+    "prosemirror-history": "1.5.0",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-model": "1.25.12",
+    "prosemirror-state": "1.4.4",
+    "prosemirror-tables": "^1.8.5",
+    "prosemirror-transform": "1.12.0",
+    "prosemirror-view": "1.42.6",
+    "shiki": "4.4.3",
+    "yaml": "2.9.1"
+  },
+  "peerDependencies": {
+    "@codemirror/commands": "6.8.1",
+    "@codemirror/state": "6.5.2",
+    "@codemirror/view": "6.38.3"
+  },
+  "peerDependenciesMeta": {
+    "@codemirror/commands": {
+      "optional": true
+    },
+    "@codemirror/state": {
+      "optional": true
+    },
+    "@codemirror/view": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@codemirror/commands": "6.8.1",
+    "@codemirror/state": "6.5.2",
+    "@codemirror/view": "6.38.3",
+    "@types/debug": "4.1.12",
+    "@types/node": "22.20.1",
+    "typescript": "7.0.2",
+    "vite": "8.2.1"
+  }
+}

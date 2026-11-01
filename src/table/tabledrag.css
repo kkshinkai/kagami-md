@@ -1,0 +1,283 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+/* Edge handles reveal after 120ms. Mounts and overlays
+   live outside contentDOM: their state never participates in table layout. */
+.kagami-table-drag {
+  position: relative;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: 0;
+  margin: var(--editor-block-margin) 0;
+}
+
+.kagami-table-drag-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  user-select: none;
+}
+
+.kagami-table-handle-mount,
+.kagami-table-add-mount {
+  position: absolute;
+  z-index: 6;
+}
+
+/* Both axes use the same shape, rotated. Fill dimensions exclude the 1px border. */
+.kagami-table-handle-mount {
+  --handle-span: 22px;
+  --handle-depth: 10px;
+  --handle-radius: 6px;
+}
+
+.kagami-table-handle-mount[data-axis='row'] {
+  width: 12px;
+  height: var(--handle-span);
+}
+
+.kagami-table-handle-mount[data-axis='column'] {
+  width: var(--handle-span);
+  height: 12px;
+}
+
+.kagami-table-handle-mount > .kagami-table-drag-handle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: none;
+  background: transparent;
+  color: var(--editor-muted-color);
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+  overflow: visible;
+}
+
+/* Fixed orientation faces share the selected mount's position, not animation
+   history. The mount switches visibility synchronously with PM selection. */
+.kagami-table-handle-mount[data-axis='row'] > [data-axis='column'],
+.kagami-table-handle-mount[data-axis='column'] > [data-axis='row'] {
+  display: none;
+}
+
+.kagami-table-drag-handle::before,
+.kagami-table-drag-handle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  pointer-events: none;
+  transition: width 120ms ease, height 120ms ease, opacity 120ms ease,
+    background-color 120ms ease, border-color 120ms ease, border-radius 120ms ease, box-shadow 120ms ease;
+}
+
+/* Dimensions describe the fill; the 1px border sits outside it.
+   With border-box, the background is 2px smaller and the three dots are off-center. */
+.kagami-table-drag-handle::before {
+  background: var(--background, var(--editor-menu-bg));
+  border: 1px solid transparent;
+  box-sizing: content-box;
+  opacity: 0;
+}
+
+.kagami-table-drag-handle::after {
+  background: currentColor;
+  border: 2px solid var(--background, var(--editor-menu-bg));
+  box-sizing: content-box;
+  background-clip: padding-box;
+}
+
+.kagami-table-drag-handle[data-axis='row']::before {
+  width: 6px;
+  height: 16px;
+}
+
+.kagami-table-drag-handle[data-axis='row']::after {
+  width: 2px;
+  height: 10px;
+}
+
+.kagami-table-drag-handle[data-axis='column']::before {
+  width: 16px;
+  height: 6px;
+}
+
+.kagami-table-drag-handle[data-axis='column']::after {
+  width: 10px;
+  height: 2px;
+}
+
+.kagami-table-drag-handle > svg {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  opacity: 0;
+  transform: scale(.8);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.kagami-table-drag-handle[data-axis='column'] > svg {
+  transform: rotate(90deg) scale(.8);
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) .kagami-table-drag-handle::before {
+  border-color: var(--editor-border-color);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 8%);
+  opacity: 1;
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) .kagami-table-drag-handle::after {
+  opacity: 0;
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) [data-axis='row']::before {
+  width: var(--handle-depth);
+  height: var(--handle-span);
+  left: calc(50% - 1px);
+  transform: translateY(-50%);
+  border-radius: 0 var(--handle-radius) var(--handle-radius) 0;
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) [data-axis='column']::before {
+  width: var(--handle-span);
+  height: var(--handle-depth);
+  top: calc(50% - 1px);
+  transform: translateX(-50%);
+  border-radius: 0 0 var(--handle-radius) var(--handle-radius);
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) [data-axis='row'] > svg {
+  opacity: 1;
+  transform: translateX(calc(var(--handle-depth) / 2));
+}
+
+.kagami-table-handle-mount:is(:hover, :focus-within, [data-selected='true']) [data-axis='column'] > svg {
+  opacity: 1;
+  transform: translateY(calc(var(--handle-depth) / 2)) rotate(90deg);
+}
+
+.kagami-table-handle-mount[data-selected='true'] .kagami-table-drag-handle {
+  color: white;
+  cursor: pointer;
+}
+
+.kagami-table-handle-mount[data-selected='true'] .kagami-table-drag-handle::before {
+  background: var(--editor-selection-border);
+  border-color: var(--editor-selection-border);
+}
+
+.kagami-table-drag-handle:focus-visible,
+.kagami-table-add:focus-visible {
+  outline: 2px solid var(--editor-selection-border);
+  outline-offset: 2px;
+}
+
+.kagami-table-drag-active .kagami-table-drag-handle {
+  cursor: grabbing;
+}
+
+.kagami-table-drag-active .kagami-table-handle-mount:not([data-selected='true']) {
+  visibility: hidden;
+}
+
+.kagami-table-handle-mount[data-dragging='true'] {
+  z-index: 9;
+}
+
+.kagami-table-selection-outline {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  border: 2px solid var(--editor-selection-border);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.markdown-editor .kagami-table-drag .selectedCell::after {
+  display: none;
+}
+
+.kagami-table-drag-indicator {
+  position: absolute;
+  z-index: 8;
+  background: var(--editor-selection-border);
+  pointer-events: none;
+}
+
+.kagami-table-drag-preview {
+  position: absolute;
+  z-index: 7;
+  overflow: hidden;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.kagami-table-drag-preview > table {
+  opacity: .18;
+}
+
+.kagami-table-drag-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 2px var(--editor-selection-border);
+}
+
+.kagami-table-add-mount > .kagami-table-add {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  font: inherit;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--editor-border-color);
+  background: var(--background, var(--editor-menu-bg));
+  color: var(--editor-muted-color);
+  pointer-events: auto;
+}
+
+.kagami-table-add > svg {
+  width: 10px;
+  height: 10px;
+}
+
+.kagami-table-add:hover {
+  color: var(--editor-text-color);
+  background: var(--editor-table-header-bg);
+}
+
+.kagami-table-drag [hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kagami-table-drag-handle::before,
+  .kagami-table-drag-handle::after,
+  .kagami-table-drag-handle > svg {
+    transition: none;
+  }
+}

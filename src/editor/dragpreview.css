@@ -1,0 +1,53 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.markdown-editor.md-block-drag-image {
+  position: fixed;
+  inset: auto;
+  top: 0;
+  left: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  display: block;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  background: transparent;
+  color: inherit;
+  box-shadow: none;
+  pointer-events: none;
+  overflow: visible;
+  border-radius: 6px;
+  z-index: 2147483647;
+  container-type: normal;
+  transform-origin: top left;
+}
+.md-block-drag-image::backdrop {
+  background: transparent;
+  pointer-events: none;
+}
+.markdown-editor.md-block-drag-image > .ProseMirror {
+  min-height: 0;
+  max-width: none;
+  flex: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  opacity: 0.5;
+  overflow: clip;
+  border-radius: inherit;
+}
+.md-block-drag-image *,
+.md-block-drag-image *::before,
+.md-block-drag-image *::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+}

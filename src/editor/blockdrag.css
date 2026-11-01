@@ -1,0 +1,112 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.md-block-gutter {
+  position: absolute;
+  left: -48px;
+  top: 0;
+  bottom: 0;
+  width: 48px;
+}
+.md-block-handle {
+  position: absolute;
+  z-index: 25;
+  width: 16px;
+  color: var(--editor-handle-color);
+}
+.md-block-handle[hidden],
+.md-block-brush[hidden] {
+  display: none;
+}
+/* The draggable button owns the full hit box; only its inert bar animates. */
+.markdown-editor .md-block-handle > button {
+  appearance: none;
+  font: inherit;
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: grab;
+  touch-action: none;
+  -webkit-user-drag: element;
+  transition: none;
+}
+.markdown-editor .md-block-handle > button:hover {
+  background: transparent;
+  color: inherit;
+}
+.md-block-grabber {
+  display: block;
+  position: absolute;
+  left: var(--block-grip-center);
+  transform: translateX(-50%);
+  top: var(--block-grip-top);
+  bottom: var(--block-grip-bottom);
+  width: 4px;
+  border-radius: 4px;
+  background: currentColor;
+  pointer-events: none;
+}
+.md-block-handle[data-animate='true'] .md-block-grabber {
+  transition:
+    top 250ms ease,
+    bottom 250ms ease,
+    width 250ms ease;
+}
+.md-block-handle[data-expanded='true'] .md-block-grabber {
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+}
+.markdown-editor .md-block-handle > button:active {
+  cursor: grabbing;
+}
+@media (prefers-reduced-motion: reduce) {
+  .md-block-handle[data-animate] .md-block-grabber {
+    transition: none;
+  }
+}
+
+.md-block-grip:focus-visible {
+  outline: 2px solid var(--editor-selection-border);
+  outline-offset: 2px;
+}
+
+.markdown-editor .md-block-brushing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.md-block-brush {
+  position: absolute;
+  box-sizing: border-box;
+  z-index: 30;
+  pointer-events: none;
+  border: 0;
+  border-radius: 3px;
+  background: var(--block-selection-fill);
+}
+
+.md-block-dragging .md-block-selected {
+  opacity: 0.35;
+}
+.md-block-dragging ~ .md-block-selection-box {
+  opacity: 0.35;
+}
+.md-block-dragging,
+.md-block-dragging * {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grabbing !important;
+}

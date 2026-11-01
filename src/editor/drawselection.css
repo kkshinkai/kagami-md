@@ -1,0 +1,65 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+.markdown-editor {
+  display: block;
+  position: relative;
+  /* Block selection is painted OVER content, including opaque code/table backgrounds.
+   * Native text-selection backgrounds may be opaque, so derive a translucent overlay
+   * from the accent instead of covering glyphs with --editor-selection-bg. */
+  --block-selection-fill: color-mix(in srgb, var(--editor-selection-border) 18%, transparent);
+  --block-selection-radius: 6px;
+}
+
+.markdown-editor > .md-text-selection-layer {
+  position: absolute;
+  inset: 0;
+  direction: ltr;
+  pointer-events: none;
+  z-index: 2;
+  /* Rich-text surfaces have opaque backgrounds; an underlay would disappear beneath them.
+   * Group opacity applies once to the connected first, middle and last bands. */
+  opacity: 0.22;
+}
+
+.md-text-selection-rect {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  pointer-events: none;
+  background: var(--editor-selection-border);
+}
+
+/* Hide only the native background while measured bands are present; retain the range and caret. */
+.markdown-editor > .ProseMirror.md-drawn-text-selection::selection,
+.markdown-editor > .ProseMirror.md-drawn-text-selection ::selection {
+  background: transparent;
+}
+
+.markdown-editor .md-block-selection-box {
+  position: absolute;
+  z-index: 2;
+  border-radius: var(--block-selection-radius);
+  background: var(--block-selection-fill);
+  pointer-events: none;
+}
+/* The structural overlay owns node highlighting once a measured target is painted. */
+.markdown-editor .md-drawn-node-selection .ProseMirror-selectednode,
+.markdown-editor .md-drawn-node-selection .ProseMirror-selectednode .md-yaml-boolean-control {
+  outline: none;
+}
+.markdown-editor .md-drawn-node-selection li.ProseMirror-selectednode::after {
+  display: none;
+}
+.markdown-editor [data-block-selection='true'] {
+  caret-color: transparent;
+}
+.markdown-editor [data-block-selection='true']::selection,
+.markdown-editor [data-block-selection='true'] ::selection {
+  background: transparent;
+}

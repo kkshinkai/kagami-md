@@ -1,0 +1,21 @@
+/* SPDX-FileCopyrightText: Kk Shinkai <i@shinkai.moe>
+ * SPDX-License-Identifier: MPL-2.0
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+@import '@fontsource/open-sans/400.css';
+@import '@fontsource/open-sans/400-italic.css';
+@import '@fontsource/open-sans/700.css';
+@import '@fontsource/open-sans/700-italic.css';
+@import './prosemirror.css';
+@import 'katex/dist/katex.min.css';
+@import './editor.css';
+@import '../table/tabledrag.css';
+@import './drawselection.css';
+@import './blockdrag.css';
+@import './dropcursor.css';
+@import './dragpreview.css';
+@import '../schema/code.css';
+@import '../schema/frontmatter.css';
