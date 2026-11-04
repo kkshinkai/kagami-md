@@ -1,7 +1,7 @@
 version = 1
 
 [[annotations]]
-path = ["package.json", "tsconfig.json", "tsconfig.build.json", "pnpm-workspace.yaml", ".gitignore", "README.md",
+path = ["package.json", "tsconfig.json", "tsconfig.build.json", "pnpm-workspace.yaml", ".gitignore", "README.md", "CHANGELOG.md",
   ".github/workflows/pages.yml", "apps/playground/index.html", "apps/playground/src/introduction.md", "apps/playground/package.json", "apps/playground/tsconfig.json"]
 SPDX-FileCopyrightText = "Kk Shinkai <i@shinkai.moe>"
 SPDX-License-Identifier = "MPL-2.0"

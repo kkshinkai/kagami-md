@@ -159,7 +159,8 @@ class SerializeContext {
     if (node.type === schema.nodes.mathBlock) {
       const origin = this.math.get(node);
       if (origin)
-        output.appendChild(this.formula('block', unparse.slice(new Slice(Fragment.from(node), 0, 0), origin),
+        // A math block has no edge mark, so the options do not reach it.
+        output.appendChild(this.formula('block', unparse.slice(new Slice(Fragment.from(node), 0, 0), origin, unparse.defaults),
           node.textContent));
       else {
         const paragraph = this.dom.createElement('p');

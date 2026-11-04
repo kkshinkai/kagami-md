@@ -110,17 +110,23 @@ export class Correspondence {
       return [this];
     }
     const result = children(syntax).map(child => new Correspondence(child));
-    if ((syntax instanceof Syntax.DocumentSyntax || syntax instanceof Syntax.BlockQuoteSyntax ||
-        syntax instanceof Syntax.ListItemSyntax || syntax instanceof Syntax.FootnoteDefinitionSyntax) &&
-        !syntax.children.length) {
-      let at = syntax.contentStart;
-      if (syntax instanceof Syntax.FootnoteDefinitionSyntax) at = syntax.label.end;
-      if (syntax instanceof Syntax.DocumentSyntax && syntax.frontMatter) at = syntax.frontMatter.end;
-      result.push(new Correspondence(syntax, at));
-    }
+    const body = this.suppliedBody();
+    if (body) result.push(body);
     if (result.length !== node.childCount)
       throw new RangeError('The reading does not correspond to the editor children');
     return result;
+  }
+
+  /** The empty paragraph conversion supplies to a container whose syntax holds no block, or null. */
+  suppliedBody(): Correspondence | null {
+    const syntax = this.syntax;
+    if (this.emptyAt !== null || !(syntax instanceof Syntax.DocumentSyntax || syntax instanceof Syntax.BlockQuoteSyntax ||
+        syntax instanceof Syntax.ListItemSyntax || syntax instanceof Syntax.FootnoteDefinitionSyntax) ||
+        syntax.children.length) return null;
+    let at = syntax.contentStart;
+    if (syntax instanceof Syntax.FootnoteDefinitionSyntax) at = syntax.label.end;
+    if (syntax instanceof Syntax.DocumentSyntax && syntax.frontMatter) at = syntax.frontMatter.end;
+    return new Correspondence(syntax, at);
   }
 }
 

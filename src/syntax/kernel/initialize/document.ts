@@ -427,12 +427,20 @@ function tokenizeContainer(this: TokenizeContext, effects: Effects, ok: State, n
     this.parser.constructs.disable.null,
     'expected `disable.null` to be populated'
   );
+  // ZWSP edge mark: the limit of three spaces makes room for indented code. A grammar that has
+  // none, a field's, has no limit before a container, but where the line would interrupt a
+  // paragraph: there a fourth space makes the line the paragraph's, in a field as in its file.
+  const unlimited = this.parser.constructs.disable.null.includes('codeIndented') ||
+    !this.interrupt && !hasIndentedCode(this.parser.constructs.flowInitial[codes.space]);
   return factorySpace(
     effects,
     effects.attempt(this.parser.constructs.document, ok, nok),
     types.linePrefix,
-    this.parser.constructs.disable.null.includes('codeIndented')
-      ? undefined
-      : constants.tabSize
+    unlimited ? undefined : constants.tabSize
   );
+}
+
+/** ZWSP edge mark: whether the constructs a line may begin with include indented code. */
+function hasIndentedCode(constructs: Construct | Construct[] | undefined): boolean {
+  return [constructs ?? []].flat().some(construct => construct.name === 'codeIndented');
 }

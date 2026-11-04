@@ -627,14 +627,28 @@
 }
 
 .markdown-editor .ProseMirror .md-code-span {
-  padding: 0.2em 0.4em;
-  border-radius: 4px;
+  padding: 0.2em 0;
+  border-radius: 0;
   background: color-mix(in srgb, var(--editor-text-color) 5%, transparent);
   color: var(--editor-text-color);
   font-family: var(--editor-monospace);
   font-size: 0.85em;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+}
+
+.markdown-editor .ProseMirror .md-code-span:has(.md-capsule-start) {
+  padding-inline-start: 0.4em;
+  border-start-start-radius: 4px;
+  border-end-start-radius: 4px;
+}
+
+/* No end where the next sibling is the same kind and continues the occurrence. `:has()` may
+   not nest inside `:has()`, so this is the equivalent of "not a continuation". */
+
+.markdown-editor .ProseMirror .md-code-span:not(:has(+ .md-code-span)),
+.markdown-editor .ProseMirror .md-code-span:has(+ .md-code-span .md-capsule-start) {
+  padding-inline-end: 0.4em;
+  border-start-end-radius: 4px;
+  border-end-end-radius: 4px;
 }
 
 .markdown-editor .ProseMirror .md-highlight {
@@ -647,25 +661,39 @@
 }
 
 .markdown-editor .ProseMirror .md-tag {
-  padding: 0.1em 0.38em;
-  border-radius: 1em;
+  padding: 0.1em 0;
+  border-radius: 0;
   background: var(--editor-tag-bg);
   color: var(--editor-tag-color);
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
 }
 
-.markdown-editor .ProseMirror .md-tag::before {
-  content: '#';
-  margin-right: 0.22em;
-  color: var(--editor-tag-marker-color);
-  font-weight: 500;
+.markdown-editor .ProseMirror .md-tag:has(.md-capsule-start) {
+  padding-inline-start: 1.52em;
+  border-start-start-radius: 1em;
+  border-end-start-radius: 1em;
+  background-image: var(--editor-tag-icon);
+  background-repeat: no-repeat;
+  background-position: 0.38em center;
+  background-size: 0.92em 0.92em;
 }
 
-/* While a tag is revealed its own marker is shown, and the drawn one would be a second. */
+/* The same continuation rule for a tag: a sibling continuation has no start marker. */
 
-.markdown-editor .ProseMirror .md-tag:has(.md-revealed)::before {
-  content: none;
+.markdown-editor .ProseMirror .md-tag:not(:has(+ .md-tag)),
+.markdown-editor .ProseMirror .md-tag:has(+ .md-tag .md-capsule-start) {
+  padding-inline-end: 0.38em;
+  border-start-end-radius: 1em;
+  border-end-end-radius: 1em;
+}
+
+/* U+2060 WORD JOINER keeps the opening `#`, and with it the icon in its padding, on the
+   same line as the first character of the name. After a `/` or `-` of the name it keeps the
+   tag one word, so a tag that does not fit moves to the next line whole; a tag longer than a
+   line still wraps where `overflow-wrap` lets a word break. */
+
+.markdown-editor .ProseMirror .md-tag .md-capsule-start::after,
+.markdown-editor .ProseMirror .md-tag .md-tag-joint::after {
+  content: "\2060";
 }
 
 .markdown-editor .ProseMirror .md-tag-slash {

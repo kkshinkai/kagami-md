@@ -1481,6 +1481,16 @@ function onexitatxheading(this: CompileContext, token: Token): undefined {
   assert(node instanceof ATXHeadingSyntax, 'expected heading on stack');
   const closing = this.data.atxHeadingClosing;
   const candidate = this.data.edgeMark;
+  const whitespace = this.data.whitespace;
+  const tail = node.children[node.children.length - 1];
+
+  // Kagami: like a paragraph's lineSuffix, the whitespace after the last
+  // text token is trivia. It has no field line ending beside it, so the
+  // frontier keeps it as editable source (fewer-edge-marks.md).
+  if (!closing && whitespace && whitespace.end.offset === token.end.offset &&
+      tail && tail.end === point(whitespace.start)) {
+    appendInline(node, new TriviaTokenSyntax('trailingWhitespace', point(whitespace.start), point(whitespace.end)));
+  }
 
   if (this.target === 'editor') {
     // ZWSP edge mark: the whitespace between the mark and the sequence is

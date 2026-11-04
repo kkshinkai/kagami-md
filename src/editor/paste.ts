@@ -287,7 +287,8 @@ class CellReader {
       this.startField();
       this.content.push(...node.content.content);
     } else if (node.isLeaf) {
-      const text = unparse.slice(new Slice(Fragment.from(node), 0, 0), this.context);
+      // A leaf block has no edge mark and is never left out, so the options do not reach it.
+      const text = unparse.slice(new Slice(Fragment.from(node), 0, 0), this.context, unparse.defaults);
       if (!text) return;
       this.startField();
       this.content.push(this.context.doc.type.schema.text(text));

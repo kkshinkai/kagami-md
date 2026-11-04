@@ -28,9 +28,12 @@ export const CONCEALED = 'md-concealed';
 const STAND_IN = 'md-stand-in';
 /** On characters shown because a text is pending, and on the closing sequence of a heading. */
 const ATX_CLOSING = 'md-atx-closing';
+/** On the element that holds a capsule occurrence's opening delimiter. */
+export const CAPSULE_START = 'md-capsule-start';
 
 /** Every class this family paints with. Copies of the painted page read this list. */
-export const presentationClasses: readonly string[] = [META, REVEALED, CONCEALED, ATX_CLOSING];
+export const presentationClasses: readonly string[] = [META, REVEALED, CONCEALED, ATX_CLOSING,
+  CAPSULE_START];
 
 /** The current source painting and the geometry retained by a pointer gesture. */
 export interface SourcePresentation {

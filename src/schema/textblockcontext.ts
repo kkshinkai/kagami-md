@@ -100,7 +100,10 @@ export function canJoinTextblocks(previous: Node, current: Node): boolean {
   return previous.type === nodes.paragraph;
 }
 
-/** Split a paragraph or heading, giving its empty outer half the default paragraph type. */
+/**
+ * Split a paragraph or heading. A heading stays with its text's start, and the other half is a
+ * paragraph: before the heading when the split is at the start of its text, after it otherwise.
+ */
 export function splitAt(tr: Transaction, $pos: ResolvedPos, depth: number): boolean {
   const node = $pos.parent;
   const { nodes } = tr.doc.type.schema;
@@ -112,8 +115,8 @@ export function splitAt(tr: Transaction, $pos: ResolvedPos, depth: number): bool
   const right = mapping.map($pos.pos, 1);
   if (node.type === nodes.heading) {
     if ($pos.parentOffset === 0 && node.content.size > 0)
-      convert(tr, mapping.map($pos.before(), 1), tr.doc.type.schema.nodes.paragraph, {});
-    if ($pos.parentOffset === node.content.size) convert(tr, right - 1, tr.doc.type.schema.nodes.paragraph, {});
+      convert(tr, mapping.map($pos.before(), 1), nodes.paragraph, {});
+    else convert(tr, right - 1, nodes.paragraph, {});
   }
   tr.setSelection(TextSelection.create(tr.doc, right));
   return true;

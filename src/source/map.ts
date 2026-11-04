@@ -6,8 +6,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { Node } from 'prosemirror-model';
-import { Bindings, parseBlocks, parseFile } from '../syntax/index.js';
+import { Bindings, parseBlocks, parseFile, TableCellSyntax } from '../syntax/index.js';
 import { children, Correspondence, type SourcePiece } from '../parse/tree.js';
+import { unparse } from '../unparse/unparse.js';
+import { fieldSource } from '../parse/field.js';
 import type { EditorLoc, SourceLoc } from './location.js';
 import { RetainedBlock, RetainedList, type RetainedDoc } from './retained.js';
 
@@ -29,7 +31,7 @@ interface Place { readonly start: number; readonly end: number; readonly editor:
 
 /** An outside query reads only the block holding its location. */
 export class SourceMap {
-  constructor(readonly tree: RetainedDoc) {}
+  constructor(readonly tree: RetainedDoc, readonly options: unparse.Options) {}
 
   sourceToEditor(location: SourceLoc): EditorLoc {
     check(location, this.tree.length);
@@ -49,7 +51,7 @@ export class SourceMap {
     if (found.part === 'end') return caret(found.address.block.node, found.address.editor, true) as EditorLoc;
     if (found.part === 'trailing') return this.after(found.address) as EditorLoc;
     const unit = previous && before!.address.block === found.address.block ? previous : this.read(found.address);
-    return (unit.inText(found.inner) ?? ownerPlace(unit.reading, unit.node, unit.editor, found.inner, unit.places) ??
+    return (unit.inText(found.inner) ?? ownerPlace(unit, unit.reading, unit.node, unit.editor, found.inner, unit.places) ??
       this.after(found.address)) as EditorLoc;
   }
 
@@ -73,12 +75,14 @@ export class SourceMap {
     let current = node;
     for (let depth = 0; depth < resolved.depth; depth++) {
       const index = resolved.index(depth);
-      reading = reading.children(current)[index]!;
+      reading = unit.children(reading, current)[index]!;
       current = current.child(index);
     }
-    if (current.isTextblock)
-      return (unit.source + fromField(reading.pieces ?? [], resolved.parentOffset, reading.range.start)) as SourceLoc;
-    const parts = reading.children(current);
+    if (current.isTextblock) {
+      const offset = Math.max(0, resolved.parentOffset - unit.trimmed(reading, current));
+      return (unit.source + fromField(reading.pieces ?? [], offset, reading.range.start)) as SourceLoc;
+    }
+    const parts = unit.children(reading, current);
     const index = resolved.index(resolved.depth);
     let point = reading.range.start;
     if (index < parts.length) point = parts[index]!.range.start;
@@ -141,11 +145,11 @@ export class SourceMap {
     const roots = file?.frontMatter ? [file.frontMatter] : file?.children ?? blocks;
     const items = address.item && roots.length === 1 ? children(roots[0]!) : roots;
     const node = block.node;
-    if (file && !roots.length && !address.item && node.type === node.type.schema.nodes.paragraph && !node.content.size)
-      return new Unit(new Correspondence(file, file.start + file.leading), node, source, address.editor);
+    if (file && !roots.length && !address.item && node.type === node.type.schema.nodes.paragraph && !block.body.length)
+      return new Unit(new Correspondence(file, file.start + file.leading), node, source, address.editor, this.options, text);
     if (roots.length !== 1 || items.length !== 1)
       throw new RangeError('A unit does not read alone as it does in the file');
-    return new Unit(new Correspondence(items[0]!), node, source, address.editor);
+    return new Unit(new Correspondence(items[0]!), node, source, address.editor, this.options, text);
   }
 
   /** Boundary text points to the next caret in its owner, without reading a second unit. */
@@ -177,19 +181,69 @@ function caret(node: Node, at: number, last: boolean): number {
 /** A unit read alone and the origin of its corresponding editor node. */
 class Unit {
   private mapped: readonly Place[] | null = null;
+  /** The readings of children the writing option left out: not in the file, they hold no source location. */
+  private readonly omitted = new WeakSet<Correspondence>();
 
   constructor(readonly reading: Correspondence, readonly node: Node, readonly source: number,
-    readonly editor: number) {}
+    readonly editor: number, readonly options: unparse.Options, readonly text: string) {}
   get start(): number { return this.source + this.reading.range.start; }
   get end(): number { return this.source + this.reading.range.end; }
   get places(): readonly Place[] {
-    return this.mapped ??= places(this.reading, this.node, this.editor);
+    return this.mapped ??= places(this, this.reading, this.node, this.editor);
   }
   get first(): number { return this.places[0]!.editor; }
   get last(): number {
     const place = this.places.at(-1)!;
     return place.editor + place.length;
   }
+  /** Only a rewritten field loses its prefix; a retained field still starts with its spaces. */
+  trimmed(reading: Correspondence, node: Node): number {
+    const types = node.type.schema.nodes;
+    if (this.options.keepStartingSpaceOrTab !== 'trim' ||
+      node.type !== types.paragraph && node.type !== types.heading && node.type !== types.tableParagraph) return 0;
+    const first = reading.pieces?.find(piece => piece.length);
+    const character = first ? this.text.charCodeAt(first.start) : -1;
+    if (character === 32 || character === 9) return 0;
+    return fieldSource(node).length - unparse.fieldText(node, this.options).length;
+  }
+  /**
+   * Omitted children have no syntax node; their positions meet the next written child. The first
+   * child with no syntax of its own, written or omitted, stands for the empty paragraph the
+   * parent's syntax reads as when it holds no block.
+   */
+  children(reading: Correspondence, node: Node): Correspondence[] {
+    const actual = children(reading.syntax);
+    if (reading.emptyAt !== null || node.isTextblock || actual.length === node.childCount ||
+      reading.syntax instanceof TableCellSyntax ||
+      this.options.keepEmptyParagraph === 'keep-all-with-zwsp') return reading.children(node);
+    const written = unparse.writtenChildren(node, 0, this.options);
+    if (written.length === node.childCount) return reading.children(node);
+    const result: Correspondence[] = [];
+    let body = reading.suppliedBody();
+    for (let index = 0, kept = 0, next = 0; index < node.childCount; index++) {
+      const isWritten = written[kept] === index;
+      if (isWritten) kept++;
+      const syntax = isWritten ? actual[next] : undefined;
+      if (syntax) {
+        result.push(new Correspondence(syntax));
+        next++;
+      } else if (body) {
+        result.push(body);
+        body = null;
+      } else if (isWritten) {
+        throw new RangeError('The reading does not correspond to the editor children');
+      } else {
+        const empty = new Correspondence(reading.syntax, actual[next]?.start ?? reading.range.end);
+        this.omitted.add(empty);
+        result.push(empty);
+      }
+    }
+    return result;
+  }
+
+  /** Whether the reading is of a child the writing option left out. */
+  isOmitted(reading: Correspondence): boolean { return this.omitted.has(reading); }
+
   /** The editor position of a location in a field's text, or at a node with no text, or null. */
   inText(point: number): number | null {
     for (const place of this.places) {
@@ -202,38 +256,42 @@ class Unit {
   }
 }
 
-function places(reading: Correspondence, node: Node, at: number, result: Place[] = []): Place[] {
+function places(unit: Unit, reading: Correspondence, node: Node, at: number, result: Place[] = []): Place[] {
   if (node.isTextblock) {
     const pieces = reading.pieces ?? [];
     const before = result.length;
-    let offset = 0;
+    let offset = unit.trimmed(reading, node);
     for (const piece of pieces) {
       if (piece.length)
         result.push({ start: piece.start, end: piece.end, editor: at + 1 + offset, length: piece.length });
       offset += piece.length;
     }
     const where = pieces[0]?.start ?? reading.range.start;
-    if (result.length === before) result.push({ start: where, end: where, editor: at + 1, length: 0 });
+    if (result.length === before) result.push({ start: where, end: where, editor: at + 1 + offset, length: 0 });
   } else {
-    const children = reading.children(node);
+    const children = unit.children(reading, node);
     if (!node.childCount) result.push({ start: reading.range.start, end: reading.range.start, editor: at, length: 0 });
-    node.forEach((child, offset, index) => places(children[index]!, child, at + 1 + offset, result));
+    node.forEach((child, offset, index) => {
+      if (!unit.isOmitted(children[index]!)) places(unit, children[index]!, child, at + 1 + offset, result);
+    });
   }
   return result;
 }
 
 /** A character that is no text, by its owner, the innermost node holding it; null outside. */
-function ownerPlace(reading: Correspondence, node: Node, at: number, point: number,
+function ownerPlace(unit: Unit, reading: Correspondence, node: Node, at: number, point: number,
   available?: readonly Place[]): number | null {
   const range = reading.range;
   if (point < range.start || point >= range.end) return null;
   if (!node.isTextblock) {
-    const children = reading.children(node);
+    const children = unit.children(reading, node);
     let found: number | null = null;
-    node.forEach((child, offset, index) => { found ??= ownerPlace(children[index]!, child, at + 1 + offset, point); });
+    node.forEach((child, offset, index) => {
+      if (!unit.isOmitted(children[index]!)) found ??= ownerPlace(unit, children[index]!, child, at + 1 + offset, point);
+    });
     if (found !== null) return found;
   }
-  const within = available ?? places(reading, node, at);
+  const within = available ?? places(unit, reading, node, at);
   const next = within.find(place => place.start > point);
   const last = within.at(-1)!;
   return next ? next.editor : last.editor + last.length;

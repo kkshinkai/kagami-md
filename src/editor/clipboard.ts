@@ -20,6 +20,7 @@ import { HTMLSerializer } from '../unparse/html.js';
 import { inlineSource } from '../unparse/inline.js';
 import { tableText } from '../unparse/tabletext.js';
 import { unparse } from '../unparse/unparse.js';
+import { source } from '../source/index.js';
 import type { DOMNode } from './dom.js';
 import { paste } from './paste.js';
 
@@ -38,8 +39,8 @@ export function clipboard(options: clipboard.Options = {}): Plugin {
       handleDOMEvents: {
         // Markdown source is pasted as source, before ProseMirror prefers its highlighting HTML.
         paste(view, event) {
-          const source = clipboard.markdownSource(event.clipboardData);
-          if (source === null || !view.editable || view.composing || !view.pasteText(source, event)) return false;
+          const markdown = clipboard.markdownSource(event.clipboardData);
+          if (markdown === null || !view.editable || view.composing || !view.pasteText(markdown, event)) return false;
           event.preventDefault();
           return true;
         },
@@ -48,8 +49,11 @@ export function clipboard(options: clipboard.Options = {}): Plugin {
       clipboardParser: new clipboard.Parser(schema, () => bindings.get(attached!.state)),
       transformPastedText: clipboard.readText,
       clipboardTextParser: paste.text,
-      clipboardTextSerializer: (slice, view) => tableText(slice, view.state.selection.$from)
-        ?? unparse.slice(slice, view.state.selection.$from),
+      clipboardTextSerializer: (slice, view) => {
+        const { options } = source.get(view.state);
+        return tableText(slice, view.state.selection.$from, options) ??
+          unparse.slice(slice, view.state.selection.$from, options);
+      },
       handlePaste(view, event, slice) {
         pending = view.state;
         try {

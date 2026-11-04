@@ -10,6 +10,7 @@ import type { KagamiMD } from '../editor/editor.js';
 import { fullSchema } from '../schema/bundle.js';
 import { read, source, type EditorLoc, type SourceLoc } from '../source/index.js';
 import { schema } from '../types/schema.js';
+import { unparse } from '../unparse/unparse.js';
 import { history } from './history.js';
 import { canRunCommand } from './input.js';
 
@@ -17,8 +18,8 @@ import { canRunCommand } from './input.js';
  * A document: its Markdown text and its history. It needs no editor: a command that needs
  * only the document runs on a state that nothing shows.
  *
- * State.create installs the fixed feature bundle. Its public contract has no configuration
- * parameter, so this bootstrap crosses into schema/. The attached KagamiMD is also held
+ * State.create installs the fixed feature bundle and fixes the writing options for the document.
+ * This bootstrap crosses into schema/. The attached KagamiMD is also held
  * here: destroying the document destroys its attachment, including during construction.
  */
 export class State {
@@ -32,7 +33,12 @@ export class State {
   private destroying = false;
 
   private constructor(spec: State.Spec) {
-    const initial = read(spec.doc ?? '');
+    const options: unparse.Options = {
+      keepEmptyParagraph: spec.keepEmptyParagraph ?? unparse.defaults.keepEmptyParagraph,
+      keepEmptySetextHeading: spec.keepEmptySetextHeading ?? unparse.defaults.keepEmptySetextHeading,
+      keepStartingSpaceOrTab: spec.keepStartingSpaceOrTab ?? unparse.defaults.keepStartingSpaceOrTab,
+    };
+    const initial = read(spec.doc ?? '', options);
     this.current = EditorState.create({
       schema,
       ...initial,
@@ -138,6 +144,9 @@ export class State {
 }
 
 export namespace State {
-  /** The Markdown text from which a document starts. */
-  export interface Spec { readonly doc?: string; }
+  /** The initial Markdown and the writing options fixed for the document's lifetime. */
+  export interface Spec extends Partial<unparse.Options> {
+    /** The Markdown text to begin with. On an editor, not used when a `state` is given. */
+    readonly doc?: string;
+  }
 }

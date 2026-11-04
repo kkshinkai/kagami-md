@@ -11,11 +11,11 @@ import { unparse } from './unparse.js';
 
 /** Write a cell selection as a standalone table. Deeper open slices belong to the
  * ordinary text serializer; the first selected row supplies the required GFM header. */
-export function tableText(slice: Slice, from: ResolvedPos): string | null {
+export function tableText(slice: Slice, from: ResolvedPos, options: unparse.Options): string | null {
   if (slice.openStart > 1 || slice.openEnd > 1) return null;
   const first = slice.content.firstChild;
   if (!first) return null;
-  if (first.type === schema.nodes.table) return write(first, from);
+  if (first.type === schema.nodes.table) return write(first, from, options);
   if (!slice.content.content.every(node => node.type === schema.nodes.tableRow)) return null;
 
   let alignments: Array<'left' | 'center' | 'right' | null> = Array(first.childCount).fill(null);
@@ -27,9 +27,9 @@ export function tableText(slice: Slice, from: ResolvedPos): string | null {
     }));
     break;
   }
-  return write(first.type.schema.nodes.table.create({ alignments }, slice.content), from);
+  return write(first.type.schema.nodes.table.create({ alignments }, slice.content), from, options);
 }
 
-function write(table: Node, from: ResolvedPos): string {
-  return unparse.slice(new Slice(Fragment.from(table), 0, 0), from);
+function write(table: Node, from: ResolvedPos, options: unparse.Options): string {
+  return unparse.slice(new Slice(Fragment.from(table), 0, 0), from, options);
 }

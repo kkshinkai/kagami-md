@@ -19,9 +19,13 @@ import type { Closing, Opening } from './unparsed.js';
  * where its trigger occurs; a unit it looks at is kept unless one of them says otherwise.
  */
 export namespace influence {
-  /** I1. The left unit of a new pair is a fence left open at the top: it must be closed. */
+  /**
+   * I1. The left unit of a new pair ends in a fence left open, at the top or last in an item or a
+   * footnote definition, whose continuation takes the blank lines before the pair: it must be closed.
+   * A quote ends at those blank lines, so a fence in one exposes no fence.
+   */
   export function openFence(left: RetainedBlock | RetainedList): boolean {
-    return left.closing.leaf === 'fence' && left.closing.continuation === null;
+    return left.closing.leaf === 'fence';
   }
 
   /**

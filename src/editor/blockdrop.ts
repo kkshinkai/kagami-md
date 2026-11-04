@@ -11,6 +11,7 @@ import { history } from '../state/history.js';
 import { type EditorState, type Transaction } from 'prosemirror-state';
 import { insert, split, replace, remove, carrier } from '../transform/transform.js';
 import { unparse } from '../unparse/unparse.js';
+import { source as sourceField } from '../source/index.js';
 import { Bindings, parseBlocks } from '../syntax/index.js';
 import { parse } from '../parse/parse.js';
 import {
@@ -48,7 +49,8 @@ function contentStart(parent: SelectableBlock | null): number {
 /** Moving across the YAML boundary changes the value's representation. A string's
  * characters become Markdown only when it leaves YAML; a Markdown block becomes
  * one scalar string when it enters a collection. */
-function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Node): Fragment | null {
+function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Node,
+  options: unparse.Options): Fragment | null {
   const yaml =
     parent.type === schema.nodes.yamlMapping || parent.type === schema.nodes.yamlSequence;
   const nodes: Node[] = [];
@@ -57,7 +59,7 @@ function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Nod
     let value = block.node.type === schema.nodes.yamlPair ? block.node.child(1) : block.node;
     if (yaml) {
       if (!value.type.isInGroup('yamlNode')) {
-        const source = unparse.slice(new Slice(Fragment.from(value), 0, 0), doc.resolve(block.from));
+        const source = unparse.slice(new Slice(Fragment.from(value), 0, 0), doc.resolve(block.from), options);
         value = documentSchema.nodes.yamlScalar.create({ tag: 'string' }, source ? documentSchema.text(source) : null);
       }
       if (parent.type === schema.nodes.yamlSequence) nodes.push(value);
@@ -150,7 +152,8 @@ class DropTargets {
           (block) => block.node.type === schema.nodes.yamlPair || block.node.type.isInGroup('yamlNode'),
         );
       const probe = crossingYAML
-        ? yamlPayload(this.doc, this.payload, target.parent)
+        // The probe asks only whether the nodes fit, never what their strings say.
+        ? yamlPayload(this.doc, this.payload, target.parent, unparse.defaults)
         : Fragment.fromArray(
             types.map((type) => type.createAndFill()).filter((node): node is Node => node !== null),
           );
@@ -212,7 +215,7 @@ export function moveBlocks(state: EditorState, source: BlockRange, intent: DropI
       (block) => block.node.type === schema.nodes.yamlPair || block.node.type.isInGroup('yamlNode'),
     )
   ) {
-    const converted = yamlPayload(state.doc, blocks, parent);
+    const converted = yamlPayload(state.doc, blocks, parent, sourceField.get(state).options);
     if (!converted) return null;
     content = converted;
   } else {

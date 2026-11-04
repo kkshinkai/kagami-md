@@ -33,6 +33,7 @@ import { html } from './html.js';
 import { image } from './image.js';
 import { math } from './math.js';
 import { tag } from './tag.js';
+import { codeSpan } from './codespan.js';
 import { wikilink } from './wikilink.js';
 import { baseKeymap } from './keymap.js';
 import { blockPreview } from './blockpreview.js';
@@ -57,6 +58,7 @@ export function fullSchema(): Plugin[] {
     clipboard({ paste: [frontmatter.pasteText, tablePaste] }),
     reveal(),
     ...tag(),
+    ...codeSpan(),
     ...wikilink(),
     html.presentation(),
     ...image(),

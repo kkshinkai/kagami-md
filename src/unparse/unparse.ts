@@ -10,11 +10,11 @@ import { fieldSource, frontMatterSource } from '../parse/field.js';
 import { Fragment, type Node, type ResolvedPos, type Slice } from 'prosemirror-model';
 import { fitsIndentedCode, fitsOnMarkerLine, htmlBlockEnds, longestClosingFence, needsEdgeMark,
   paragraphReactions, repairPhrasing, startsLinkTitle, measureWidth, type CalloutSpelling,
-  type FootnoteDefinitionSpelling,
+  transduce, Bindings, type FootnoteDefinitionSpelling,
   type MathBlockSpelling, type TableSpelling } from '../syntax/index.js';
 import { schema, pendingMarks, type CodeSpelling, type HeadingSpelling } from '../types/schema.js';
 import {
-  after, atFileStart, blanks, definitionFrames, expressesEmpty, indentation, inlineNode, itemMarker, itemPattern,
+  after, blanks, definitionFrames, expressesEmpty, indentation, inlineNode, itemMarker, itemPattern,
   listPattern, quoteMarker
 } from './frames.js';
 import { frontMatterFence, markerPattern, opensAfterMarker } from './markers.js';
@@ -28,17 +28,104 @@ import {
 import { yaml } from './yaml.js';
 
 /** Write a block's body and its exposure to neighboring blocks. */
-export function unparse(node: Node, context: DisambiguationContext): Unparsed {
-  return new UnparseContext(false).block(node, context);
+export function unparse(node: Node, context: DisambiguationContext, options: unparse.Options): Unparsed {
+  return new UnparseContext(false, options).block(node, context);
 }
 
 export namespace unparse {
+  /** How empty blocks and the spaces that begin a text are written (private-docs/design/fewer-edge-marks.md). */
+  export interface Options {
+    /** Which empty paragraphs are kept with the edge mark. */
+    readonly keepEmptyParagraph: 'keep-all-with-zwsp' | 'keep-non-final-with-zwsp' | 'keep-enclosed-with-zwsp' | 'remove-all';
+    /** Whether an empty Setext heading keeps its form with the mark or is written as ATX. */
+    readonly keepEmptySetextHeading: 'keep-with-zwsp' | 'convert-to-atx-heading';
+    /** Whether starting spaces and tabs are trimmed or kept with the mark. */
+    readonly keepStartingSpaceOrTab: 'trim' | 'keep-with-zwsp';
+  }
+
+  /** What is written when nothing is said. */
+  export const defaults: Options = {
+    keepEmptyParagraph: 'keep-non-final-with-zwsp',
+    keepEmptySetextHeading: 'keep-with-zwsp',
+    keepStartingSpaceOrTab: 'keep-with-zwsp',
+  };
+
+  /** A field's text as written: under `trim`, without the spaces and tabs it starts with. */
+  export function fieldText(node: Node, options: Options): string {
+    const text = fieldSource(node);
+    return options.keepStartingSpaceOrTab === 'trim' ? text.replace(/^[ \t]+/, '') : text;
+  }
+
+  /** Whether `node` is a paragraph written with no text. */
+  export function emptyParagraph(node: Node, options: Options): boolean {
+    return node.type === schema.nodes.paragraph && (!node.content.size || !fieldText(node, options));
+  }
+
+  /**
+   * The children of a parent where the option keeps empty paragraphs: those strictly between
+   * `first` and `last`. Under `keep-enclosed-with-zwsp` they are the bounds of the parent's first
+   * and last block that is not an empty paragraph; under `keep-non-final-with-zwsp`, everything
+   * before the document's last such block, and everything in any other parent. Only the empty
+   * stretches at the ends are looked at. Under the other options no child is kept this way.
+   */
+  export class Kept {
+    private constructor(readonly first: number, readonly last: number) {}
+
+    static of(parent: Node, options: Options): Kept {
+      const { keepEmptyParagraph } = options;
+      if (keepEmptyParagraph === 'remove-all' || keepEmptyParagraph === 'keep-all-with-zwsp') return new Kept(-1, -1);
+      const nonFinal = keepEmptyParagraph === 'keep-non-final-with-zwsp';
+      if (nonFinal && parent.type !== schema.nodes.document) return new Kept(-1, parent.childCount);
+      const edge = (index: number) => {
+        const child = parent.child(index);
+        return !child.type.isInGroup('block') || emptyParagraph(child, options);
+      };
+      let first = 0;
+      let last = parent.childCount - 1;
+      while (!nonFinal && first <= last && edge(first)) first++;
+      while (last >= first && edge(last)) last--;
+      return new Kept(nonFinal ? -1 : first, last);
+    }
+
+    has(index: number): boolean { return index > this.first && index < this.last; }
+  }
+
+  /** The indices of the children of `parent`, from `from` on, that writing does not leave out. */
+  export function writtenChildren(parent: Node, from: number, options: Options): number[] {
+    const kept = Kept.of(parent, options);
+    const indices: number[] = [];
+    for (let index = from; index < parent.childCount; index++)
+      if (!dropsChild(parent, index, kept.has(index), indices.length > 0, options)) indices.push(index);
+    return indices;
+  }
+
+  /** Whether the writing option leaves this child out, including its margin and boundary. */
+  export function dropsChild(parent: Node, index: number, kept: boolean, preceded: boolean, options: Options): boolean {
+    if (options.keepEmptyParagraph === 'keep-all-with-zwsp' ||
+      !emptyParagraph(parent.child(index), options) || expressesEmpty(parent, index)) return false;
+    if (kept) return false;
+    if (preceded || index + 1 === parent.childCount) return true;
+    const next = parent.child(index + 1);
+    if (next.type !== schema.nodes.paragraph &&
+      !(next.type === schema.nodes.heading && next.attrs.form === 'setext')) return true;
+    const taskMarker = parent.type === schema.nodes.listItem && parent.attrs.checked === null;
+    const calloutDeclaration = parent.type === schema.nodes.blockQuote;
+    if (!taskMarker && !calloutDeclaration) return true;
+    const reading = transduce(fieldText(next, options), {
+      phrasing: 'paragraph', settle: true, firstInListItem: taskMarker, firstInBlockQuote: calloutDeclaration,
+    }, Bindings.none);
+    // A Setext heading keeps its item reading through the existing marker-line repair.
+    // A declaration first in a quote has no such repair, whichever paragraph-content block holds it.
+    return reading.kind !== 'inline' || !reading.children.some(child => child.type === 'calloutDeclaration' ||
+      child.type === 'taskMarker' && next.type === schema.nodes.paragraph);
+  }
+
   /** Write a block as the only block of a file, as an export shows its source. */
   export function alone(node: Node): Unparsed {
     return unparse(node, {
       column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
       parent: schema.nodes.document.create(null, node), index: 0, loose: true,
-    });
+    }, defaults);
   }
 
   /**
@@ -60,15 +147,18 @@ export namespace unparse {
   }
 
   /**
-   * Write a slice for the clipboard: in its own spelling, from no kept source, and with no edge
-   * mark. The clipboard is no file: where a paragraph standing alone would read as something
-   * else, its text is written with the backslash the tree would take (`foo` over `\\===`).
+   * Write a slice for the clipboard: in its own spelling, from no kept source. The clipboard is
+   * no file: where a paragraph standing alone would read as something else, its text is written
+   * with the backslash the tree would take (`foo` over `\\===`). Blocks are written with the
+   * edge mark and the writing options, as the file is; a slice inside one text is its characters
+   * (private-docs/deviations/zwsp-edge-mark.md).
    *
    * @param slice A slice of a document.
    * @param from Where it was taken from: a value of a YAML sequence is written as an item of one, `- one`.
+   * @param options The writing options of the document it was taken from.
    * @returns Its Markdown.
    */
-  export function slice(slice: Slice, from: ResolvedPos): string {
+  export function slice(slice: Slice, from: ResolvedPos, options: Options): string {
     let content = slice.content;
     for (let open = Math.min(slice.openStart, slice.openEnd); open && content.childCount === 1; open--)
       content = content.firstChild!.content;
@@ -77,7 +167,7 @@ export namespace unparse {
         content.content.every(node => node.type.isInGroup('yamlNode')))
       content = Fragment.from(from.parent.type.create(null, content));
     // The slice stands as a document of its own.
-    return new UnparseContext(true).sequence({
+    return new UnparseContext(true, options).sequence({
       column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
       parent: schema.nodes.document.create(null, content), index: 0, loose: true,
     }, 1, false).body;
@@ -86,7 +176,7 @@ export namespace unparse {
 
 /** Settings shared by a walk over the supplied document nodes. */
 class UnparseContext {
-  constructor(readonly clipboard: boolean) {}
+  constructor(readonly clipboard: boolean, readonly options: unparse.Options) {}
 
   block(node: Node, context: DisambiguationContext): Unparsed {
     const margin = blockMargin(node, context);
@@ -105,7 +195,8 @@ class UnparseContext {
       }
       case schema.nodes.thematicBreak:
         // Kept from front matter at the start of the file (private-docs/design/influences.md, I5).
-        return fenceOpening(written(margin + (!this.clipboard && atFileStart(context.parent, context.index) ? '----' : '---'),
+        return fenceOpening(written(margin + (!this.clipboard && context.parent.type === schema.nodes.document &&
+          !context.preceding && !blanks(context.parent, 'start') ? '----' : '---'),
           'thematicBreak', column, false));
       case schema.nodes.blockQuote: return this.quote(node, context, margin);
       case schema.nodes.callout: return this.callout(node, context, margin);
@@ -151,44 +242,47 @@ class UnparseContext {
    *
    * @param framed Whether the parent's leading blank lines are written before them.
    */
-  sequence(first: DisambiguationContext, defaultGap: number, framed: boolean): Unparsed {
-    const nodes = first.parent.content.content.slice(first.index);
+  sequence(first: DisambiguationContext, defaultGap: number, framed: boolean,
+    children = unparse.writtenChildren(first.parent, first.index, this.options)): Unparsed {
     const parts: string[] = [];
     let opening: Opening | null = null;
     let closing = first.preceding;
-    for (let index = 0; index < nodes.length; index++) {
-      const node = nodes[index]!;
-      const follows = index + 1 < nodes.length;
+    let previous: Node | null = null;
+    for (let at = 0; at < children.length; at++) {
+      const index = children[at]!;
+      const node = first.parent.child(index);
+      const follows = at + 1 < children.length;
       const part = this.block(node, {
         ...first,
-        column: index ? first.laterColumn : first.column,
+        column: at ? first.laterColumn : first.column,
         preceding: closing,
         followed: follows || first.followed,
         terminated: follows || first.terminated,
-        index: first.index + index,
+        index,
       });
-      if (index) parts.push(separator(nodes[index - 1]!, node, closing, part.opening, defaultGap));
+      if (previous) parts.push(separator(previous, node, closing, part.opening, defaultGap));
       else if (framed) {
-        const empty = nodes.length === 1 && node.type === schema.nodes.paragraph && !node.content.size;
+        const empty = children.length === 1 && node.type === schema.nodes.paragraph && !node.content.size;
         parts.push('\n'.repeat(Math.max(0, blanks(first.parent, 'start') - Number(empty))));
       }
       parts.push(childBody(node, part.body));
       if (!opening) opening = part.opening;
       closing = part.closing;
+      previous = node;
     }
     return { body: parts.join(''), opening, closing: closing ?? Closing.none };
   }
 
   private paragraph(node: Node, context: DisambiguationContext, margin: string): Unparsed {
-    let text = fieldSource(node);
+    let text = unparse.fieldText(node, this.options);
     if (this.clipboard) {
       for (const repair of repairPhrasing(text, 'paragraph', { escapeBlocks: true }).reverse())
         text = text.slice(0, repair.start) + repair.insert + text.slice(repair.end);
     }
     const { parent, index } = context;
-    const edge = !this.clipboard && (text || !expressesEmpty(parent, index)) && needsEdgeMark(text, 'paragraph', {
-      taskMarker: index === 0 && parent.type === schema.nodes.listItem && parent.attrs.checked === null,
-      calloutDeclaration: index === 0 && parent.type === schema.nodes.blockQuote,
+    const edge = (text || !expressesEmpty(parent, index)) && needsEdgeMark(text, 'paragraph', {
+      taskMarker: !context.preceding && parent.type === schema.nodes.listItem && parent.attrs.checked === null,
+      calloutDeclaration: !context.preceding && parent.type === schema.nodes.blockQuote,
     }) ? '\u200b' : '';
     const pending = pendingLines(node);
     const reactions = new Set(paragraphReactions(text, context.laterColumn).filter(line => !pending.has(line)));
@@ -203,11 +297,13 @@ class UnparseContext {
   }
 
   private heading(node: Node, margin: string, column: number): Unparsed {
-    const spelling: HeadingSpelling | null = node.attrs.spelling;
-    const text = fieldSource(node);
-    const atx = node.attrs.form === 'atx';
+    const text = unparse.fieldText(node, this.options);
+    const converted = !text && node.attrs.form === 'setext' &&
+      this.options.keepEmptySetextHeading === 'convert-to-atx-heading';
+    const spelling: HeadingSpelling | null = converted ? null : node.attrs.spelling;
+    const atx = node.attrs.form === 'atx' || converted;
     const kind = atx ? 'atxHeading' : 'paragraph';
-    const edge = !this.clipboard && (text || !atx) && needsEdgeMark(text, kind) ? '\u200b' : '';
+    const edge = (text || !atx) && needsEdgeMark(text, kind) ? '\u200b' : '';
     if (atx) {
       const close = spelling?.closingSequence;
       const head = '#'.repeat(node.attrs.level) + (spelling?.whitespaceAfterMarker || (text ? ' ' : ''));
@@ -289,9 +385,9 @@ class UnparseContext {
       + fieldSource(title);
     const body = new QuoteContext(this, node, { ...context, column: context.laterColumn },
       { first: later, later }).write(1);
-    if (node.childCount > 1) text += '\n' + body.body;
+    if (body.body) text += '\n' + body.body;
     else text += ('\n' + bareQuote(later)).repeat(blanks(node, 'end'));
-    const leaf = blanks(node, 'end') || node.childCount === 1 ? 'none' : Closing.paragraph(body.closing.leaf);
+    const leaf = blanks(node, 'end') || !body.body ? 'none' : Closing.paragraph(body.closing.leaf);
     return written(text, 'blockQuote', context.column + margin.length, true,
       { ...Closing.none, leaf, openQuote: true });
   }
@@ -325,7 +421,10 @@ class UnparseContext {
     const spelling: FootnoteDefinitionSpelling | null = node.attrs.spelling;
     const head = '[^' + fieldSource(node.child(0)) + ']:';
     const gap: string = spelling?.whitespaceAfterLabel ?? ' ';
-    const first = node.child(1);
+    const children = unparse.writtenChildren(node, 1, this.options);
+    if (!children.length) return written(margin + head, 'footnoteDefinition', context.column + margin.length,
+      false, { ...Closing.none, continuation: context.laterColumn + 4 });
+    const first = node.child(children[0]!);
     const marginAffectsBody = first.type === schema.nodes.codeBlock || first.type === schema.nodes.mathBlock ||
       first.type.isInGroup('list');
     const compact = spelling?.startsOnLabelLine !== false && !indentedCode(first) &&
@@ -334,9 +433,9 @@ class UnparseContext {
     const childColumn = compact ? after(margin + head + gap, context.column) : context.laterColumn + 4;
     const body = this.sequence({
       column: childColumn, laterColumn: context.laterColumn + continuation,
-      preceding: null, followed: false, terminated: context.terminated,
+      preceding: null, followed: context.followed, terminated: context.terminated,
       parent: node, index: 1, loose: true,
-    }, 1, true);
+    }, 1, true, children);
     // The label owns all opening whitespace; the child's Opening identifies only structural margin.
     const ownedMargin = compact && body.opening ? body.opening.column - childColumn : 0;
     const text = margin + head + (compact ? gap : '\n    ') +
@@ -359,8 +458,8 @@ class UnparseContext {
     const lines: string[] = [];
     for (let index = 0; index < rows.length; index++) {
       const cells = rows[index]!.content.content.map((cell, column) => {
-        const text = fieldSource(cell.child(0));
-        const edge = !this.clipboard && text && needsEdgeMark(text, 'tableCell') ? '\u200b' : '';
+        const text = unparse.fieldText(cell.child(0), this.options);
+        const edge = text && needsEdgeMark(text, 'tableCell') ? '\u200b' : '';
         let result = (padding === 'none' ? '' : ' ') + edge + text;
         if (padding === 'aligned') result += ' '.repeat(widths[column]! - measureWidth(text).width);
         return result + (padding === 'none' ? '' : ' ');
@@ -389,7 +488,6 @@ interface QuotePrefixes {
 class QuoteContext {
   private closing: Closing | null = null;
   private closingColumn: number;
-
   constructor(readonly writer: UnparseContext, readonly owner: Node, readonly context: DisambiguationContext,
     readonly prefixes: QuotePrefixes) {
     this.closingColumn = context.laterColumn;
@@ -397,7 +495,9 @@ class QuoteContext {
 
   /** Write the owner's children from `from` on at the quote's columns, retaining the protective-prefix retry. */
   write(from: number): Unparsed {
-    const nodes = this.owner.content.content.slice(from);
+    const children = unparse.writtenChildren(this.owner, from, this.writer.options);
+    const nodes = children.map(index => this.owner.child(index));
+    if (!nodes.length) return { body: from ? '' : bareQuote(this.prefixes.first), opening: null, closing: Closing.none };
     const parts: string[] = [];
     const empty = nodes.length === 1 && nodes[0]!.type === schema.nodes.paragraph && !nodes[0]!.content.size;
     const leading = Math.max(0, blanks(this.owner, 'start') - Number(empty));
@@ -412,7 +512,7 @@ class QuoteContext {
       let first = atStart ? this.prefixes.first : this.prefixes.later;
       let later = alignLiteralPrefix(node, first, this.prefixes.later, column, this.context.laterColumn);
       const follows = index + 1 < nodes.length;
-      let part = this.child(node, from + index, first, later, column, follows);
+      let part = this.child(node, children[index]!, first, later, column, follows);
       const lines = childBody(node, part.body).split('\n');
       const protectFirst = first.endsWith('>') && /^[ \t]/.test(lines[0]!);
       const protectLater = later.endsWith('>') && lines.slice(1).some(line => /^[ \t]/.test(line));
@@ -420,7 +520,7 @@ class QuoteContext {
         if (protectFirst) first += ' ';
         later = this.prefixes.later + (protectLater ? ' ' : '');
         later = alignLiteralPrefix(node, first, later, column, this.context.laterColumn);
-        part = this.child(node, from + index, first, later, column, follows);
+        part = this.child(node, children[index]!, first, later, column, follows);
       }
       const preceding = shiftClosing(this.closing, after(first, column) - this.closingColumn);
       if (index) {
@@ -465,6 +565,7 @@ class ItemContext {
   readonly gap: string;
   readonly check: string;
   readonly head: string;
+  readonly children: readonly number[];
 
   constructor(readonly writer: UnparseContext, readonly node: Node, readonly context: DisambiguationContext,
     readonly margin: string) {
@@ -475,6 +576,7 @@ class ItemContext {
     this.gap = node.attrs.spelling?.whitespaceAfterMarker || ' ';
     this.check = taskCheck(node.attrs.checked);
     this.head = this.marker + this.gap + this.check;
+    this.children = unparse.writtenChildren(node, 0, writer.options);
   }
 
   write(): Unparsed {
@@ -511,24 +613,25 @@ class ItemContext {
     const checked: boolean | null = this.node.attrs.checked;
     let closing: Closing | null = null;
     let opening: Opening | null = null;
-    for (let index = 0; index < this.node.childCount; index++) {
+    for (let at = 0; at < this.children.length; at++) {
+      const index = this.children[at]!;
       const child = this.node.child(index);
       const continuation = child.type === schema.nodes.paragraph
         ? Math.max(columns, this.node.attrs.spelling?.continuationIndent ?? columns) : columns;
-      const firstColumn = index || !compact
+      const firstColumn = at || !compact
         ? this.context.laterColumn + columns : after(this.margin + this.head, this.context.column);
-      const follows = index + 1 < this.node.childCount;
+      const follows = at + 1 < this.children.length;
       const part = this.writer.block(child, {
         column: firstColumn, laterColumn: this.context.laterColumn + continuation,
-        preceding: closing, followed: follows, terminated: follows || this.context.terminated,
+        preceding: closing, followed: follows || this.context.followed, terminated: follows || this.context.terminated,
         parent: this.node, index, loose,
       });
-      if (index && !loose && blockBoundary(child, closing, part.opening, { sameList: false, loose }) === null &&
+      if (at && !loose && blockBoundary(child, closing, part.opening, { sameList: false, loose }) === null &&
         blockBoundary(child, closing, part.opening, { sameList: false, loose: true }) !== null)
         return this.body(compact, true);
       children.push({ node: child, part, continuation, preceding: closing });
       if (!opening) opening = part.opening;
-      closing = index === 0 && checked !== null && !part.opening
+      closing = at === 0 && checked !== null && !part.opening
         ? { ...Closing.none, leaf: 'paragraph' } : part.closing;
     }
     const parts: string[] = [];
@@ -543,7 +646,8 @@ class ItemContext {
 
   /** Whitespace before the child's first token participates in its item's indentation. */
   private columns(compact: boolean): number {
-    const padding = this.node.attrs.checked === null ? openingIndent(this.node.child(0)) : 0;
+    const first = this.children[0];
+    const padding = this.node.attrs.checked === null && first !== undefined ? openingIndent(this.node.child(first)) : 0;
     const at = this.context.column + this.margin.length + this.marker.length;
     const width = after(this.gap + ' '.repeat(padding), at) - at;
     return continuationMargin(this.context,

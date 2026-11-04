@@ -42,7 +42,9 @@ export function blanks(node: Node, side: 'leadingBlankLines' | 'trailingBlankLin
 
 /** The recorded first-line margin of a block. */
 export function indentation(node: Node): string {
-  return ' '.repeat(node.attrs.spelling?.spacesBeforeBlock ?? 0);
+  // A field converts with any number of typed spaces before a marker; a file holds at most three
+  // before a block, and a fourth would open indented code (private-docs/deviations/zwsp-edge-mark.md).
+  return ' '.repeat(Math.min(3, node.attrs.spelling?.spacesBeforeBlock ?? 0));
 }
 
 /**
@@ -85,11 +87,6 @@ export function numberedByIndex(list: Node, item: Node): boolean {
   const numbering: 'sequential' | 'constant' | null | undefined = list.attrs.spelling?.numbering;
   return list.type === schema.nodes.orderedList && numbering !== 'constant' &&
     !(numbering === null && item.attrs.spelling?.marker !== undefined);
-}
-
-/** Whether a block at `index` of `parent` stands at the very start of its file. */
-export function atFileStart(parent: Node, index: number): boolean {
-  return parent.type === schema.nodes.document && index === 0 && !blanks(parent, 'start');
 }
 
 /** Whether an empty paragraph at `index` of `parent` reads back from the parent's syntax alone. */

@@ -31,7 +31,6 @@ import { heading } from './heading.js';
 import { link } from './link.js';
 import { list } from './list.js';
 import { math } from './math.js';
-import { tag } from './tag.js';
 import { convert } from '../transform/transform.js';
 
 /** The platform-specific shortcuts follow ProseMirror's base keymap. */
@@ -48,7 +47,7 @@ function format(command: Command): Command {
 
 /** The shared editor keys. Feature-specific navigation stays with its feature. */
 export function baseKeymap(): Plugin {
-  const backward = chainCommands(frontmatter.backspace, baseKeymap.deleteBackward);
+  const backward = chainCommands(frontmatter.backspace, baseKeymap.deleteBackward());
   const bindings: Record<string, Command> = {
     'Mod-a': selectAll, 'Mod-z': undo, 'Shift-Mod-z': redo, 'Mod-y': redo,
     Enter: baseKeymap.enter, 'Shift-Enter': baseKeymap.insertLineBreak,
@@ -66,7 +65,7 @@ export function baseKeymap(): Plugin {
     'Shift-Alt-Ctrl-Meta-Enter': frontmatter.insertAfter,
     Tab: baseKeymap.indent, 'Shift-Tab': baseKeymap.dedent,
     Backspace: baseKeymap.deleteUnit('backward'),
-    'Shift-Backspace': chainCommands(frontmatter.backspace, callout.backspace, baseKeymap.deleteBackward),
+    'Shift-Backspace': chainCommands(frontmatter.backspace, callout.backspace, baseKeymap.deleteBackward()),
     'Ctrl-Backspace': mac ? frontmatter.backspace : backward,
     'Meta-Backspace': mac ? backward : frontmatter.backspace,
     'Alt-Backspace': mac ? backward : frontmatter.backspace,
@@ -144,6 +143,13 @@ export namespace baseKeymap {
     return applyTransaction(state, dispatch, joinBeside(state, context, -1) ?? removeEmpty(state, context, -1));
   };
 
+  /** Backward deletion. `boundary` is a feature command for the caret's own boundary; it runs
+   * after the join and before the neighbor selection. */
+  export function deleteBackward(boundary?: Command): Command {
+    return chainCommands(deleteSelection, joinBackward,
+      ...(boundary ? [boundary] : []), selectNodeBackward);
+  }
+
   /** Delete at the end of a textblock. */
   export const joinForward: Command = (state, dispatch) => {
     const context = TextblockContext.read(state);
@@ -159,9 +165,6 @@ export namespace baseKeymap {
     }
     return applyTransaction(state, dispatch, tr ?? joinBeside(state, context, 1) ?? removeEmpty(state, context, 1));
   };
-
-  /** Delete backward through the structural boundary shared by deletion shortcuts. */
-  export const deleteBackward: Command = chainCommands(deleteSelection, joinBackward, selectNodeBackward);
 
   /** Delete forward through the structural boundary shared by deletion shortcuts. */
   export const deleteForward: Command = chainCommands(deleteSelection, joinForward, selectNodeForward);
@@ -189,9 +192,9 @@ export namespace baseKeymap {
   /** Plain Backspace and Delete also handle feature-specific field boundaries. */
   export function deleteUnit(direction: 'backward' | 'forward'): Command {
     return (state, dispatch, view) => (direction === 'backward' ? chainCommands(
-      frontmatter.backspace, callout.backspace, tag.selectForDeletion(-1),
-      tables.guardCellBoundary(-1), link.deleteBackward, baseKeymap.deleteBackward, heading.toParagraph,
-    ) : chainCommands(tag.selectForDeletion(1), tables.guardCellBoundary(1), link.deleteForward,
+      frontmatter.backspace, callout.backspace, tables.guardCellBoundary(-1), link.deleteBackward,
+      baseKeymap.deleteBackward(heading.toParagraph),
+    ) : chainCommands(tables.guardCellBoundary(1), link.deleteForward,
       baseKeymap.deleteForward))(state, dispatch, view);
   }
 

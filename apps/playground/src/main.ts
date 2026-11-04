@@ -7,7 +7,7 @@
 
 import { KagamiMD, type SourceLoc, type Tag } from 'kagami-md';
 import { EditorState } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers } from '@codemirror/view';
+import { EditorView, highlightSpecialChars, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
@@ -65,6 +65,7 @@ const sourceHighlight = HighlightStyle.define([
 
 const sourceExtensions = [
   lineNumbers(),
+  highlightSpecialChars(),
   markdown({ base: markdownLanguage }),
   syntaxHighlighting(sourceHighlight),
   history(),

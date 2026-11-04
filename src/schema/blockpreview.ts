@@ -32,6 +32,7 @@ class PreviewContext {
     'md-yaml-literal-prefix',
     'md-code-block-token',
     'md-tag-slash',
+    'md-tag-joint',
   ]);
 
   constructor(readonly view: EditorView) {

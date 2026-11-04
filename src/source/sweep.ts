@@ -10,7 +10,7 @@ import type { Mapping, Step } from 'prosemirror-transform';
 import { blanks } from '../unparse/frames.js';
 import { influence } from '../unparse/influences.js';
 import { unparse } from '../unparse/unparse.js';
-import type { DisambiguationContext, Opening } from '../unparse/unparsed.js';
+import { Closing, type DisambiguationContext, type Opening } from '../unparse/unparsed.js';
 import { changedRanges, type Change } from '../state/changes.js';
 import { boundaryText, frameCount, lineCount } from './frame.js';
 import { RetainedBlock, RetainedDoc, RetainedList } from './retained.js';
@@ -33,13 +33,13 @@ interface Swept {
  * shared, by slicing the old sequence, without being looked at.
  */
 export function sweep(source: Source, doc: Node, steps: readonly Step[], mapping: Mapping): Swept {
-  return new SweepContext(source.properties, source, doc, mapping, changedRanges(steps, mapping)).document();
+  return new SweepContext(source.properties, source.options, source, doc, mapping, changedRanges(steps, mapping)).document();
 }
 
 export namespace sweep {
   /** Write a document that has no file, once, unit by unit, through the same functions. */
-  export function write(doc: Node, properties: FileProperties): Swept {
-    return new SweepContext(properties, null, doc, null, []).document();
+  export function write(doc: Node, properties: FileProperties, options: unparse.Options): Swept {
+    return new SweepContext(properties, options, null, doc, null, []).document();
   }
 }
 
@@ -77,10 +77,16 @@ class SweepContext {
   /** The front matter fences among the lines written by this sweep (I5). */
   readonly fences = new Set<Opening.FrontMatterFence>();
   readonly inverse: Mapping | null;
+  /** Where the option keeps empty paragraphs, now and before the transaction (I10). */
+  readonly kept: unparse.Kept;
+  readonly oldKept: unparse.Kept | null;
 
-  constructor(readonly properties: FileProperties, readonly before: Source | null, readonly doc: Node,
+  constructor(readonly properties: FileProperties, readonly options: unparse.Options,
+    readonly before: Source | null, readonly doc: Node,
     readonly mapping: Mapping | null, readonly changes: readonly Change[]) {
     this.inverse = mapping && mapping.invert();
+    this.kept = unparse.Kept.of(doc, options);
+    this.oldKept = before && unparse.Kept.of(before.doc, options);
   }
 
   document(): Swept {
@@ -102,22 +108,32 @@ class SweepContext {
       seeds.add(0);
       seeds.add(1);
     }
-    const root = new RootUnits(this, trailing);
-    const level = new LevelSweep({ old, parent: this.doc, runs }, root, seeds,
+    const { kept, oldKept } = this;
+    if (oldKept &&
+      (mappedIndex(oldKept.first, runs) !== kept.first || mappedIndex(oldKept.last, runs) !== kept.last)) {
+      // I10: only the old and new edge runs can have changed whether the option keeps them.
+      for (let i = 0; i < kept.first; i++) seeds.add(i);
+      for (let i = kept.last + 1; i < count; i++) seeds.add(i);
+      for (let i = 0; i < oldKept.first; i++) seeds.add(mappedIndex(i, runs));
+      for (let i = oldKept.last + 1; i < old.count; i++) seeds.add(mappedIndex(i, runs));
+    }
+    const root = new RootUnits(this, trailing, { old, parent: this.doc, runs });
+    const level = new LevelSweep(root.level, root, seeds,
       startChanged, endChanged || trailing !== before?.tree.trailing);
     let units = level.sweep();
-    const first = units.get(0);
+    const firstIndex = root.firstIndex(units);
+    const first = firstIndex < 0 ? null : units.get(firstIndex);
     // I5: the first unit opens front matter that a later line closes. A unit new to the start of
     // the file is not known to be free of such a line, so it is never left so. Written again, a
     // thematic break takes another spelling; a text that has none is moved off the start by a
     // blank line of the document's own.
     if (!leading && first instanceof RetainedBlock && first.opening?.frontMatter &&
-      (!before || first !== before.tree.units.get(0) || before.tree.leading ||
+      (!before || first !== firstWritten(before.tree.units) || before.tree.leading ||
         influence.frontMatter(first, this.fences))) {
-      units = root.rewriteFirst(units);
-      if (units.get(0).opening?.frontMatter) leading = '\n';
+      units = root.rewriteFirst(units, firstIndex);
+      if (units.get(firstIndex).opening?.frontMatter) leading = '\n';
     }
-    if (leading && !leading.endsWith('\n') && firstBody(units.get(0)))
+    if (leading && !leading.endsWith('\n') && first && firstBody(first))
       leading = '\n'.repeat(frameCount(this.doc, 'start'));
     if (leading !== before?.tree.leading || trailing !== before?.tree.trailing) this.textChanged = true;
     const tree = before && units === before.tree.units && leading === before.tree.leading &&
@@ -149,9 +165,11 @@ class SweepContext {
       let position = start;
       for (;;) {
         // Past the last change taken in, old and new positions differ by a constant, up to the
-        // next change: one that begins before the run ends on either side is taken in first.
+        // next change: one that begins before the run ends on either side is taken in first. A
+        // change at the old end itself is taken in too: what it inserts there may belong to the
+        // unit before, so the old end does not map by the constant.
         const following = changes[c];
-        if (following && (following.from - oldBase < last.position || following.start - newBase < position ||
+        if (following && (following.from - oldBase <= last.position || following.start - newBase < position ||
           last.index === old.count)) {
           to = Math.max(to, following.to - oldBase);
           end = Math.max(end, following.end - newBase);
@@ -242,7 +260,7 @@ class SweepContext {
   }
 
   write(node: Node, old: RetainedBlock | null, context: DisambiguationContext): RetainedBlock {
-    const written = unparse(node, context);
+    const written = unparse(node, context, this.options);
     if (old?.body !== written.body) {
       this.textChanged = true;
       influence.fences(written.body, this.fences);
@@ -266,14 +284,22 @@ class SweepContext {
 
 /** What a level's units need from the sweep. */
 interface Units<T extends Unit> {
+  /** Whether writing this child leaves it out under the option. */
+  drops(index: number): boolean;
   /**
    * The unit at `index` as it now stands: kept, written, or rebuilt.
    *
    * @param edge Whether what follows the unit may have changed.
    */
   examine(index: number, entry: Entry<T>, left: T | null, edge: boolean): T;
-  /** I1: the unit at `index`, written again because a unit now follows it. */
-  close(index: number, unit: T, left: T | null): T;
+  /** Whether text followed this level's units in the old file, outside the level (I1). */
+  readonly followedBefore: boolean;
+  /**
+   * I1: the unit at `index`, written again because a unit now follows it.
+   *
+   * @param before Its index among the old units of its level.
+   */
+  close(index: number, unit: T, left: T | null, before: number): T;
   /** Two neighbors with the blank lines between them written. */
   between(left: T, right: T): [T, T];
   /** The first unit, with nothing before it in its level. */
@@ -291,14 +317,16 @@ interface Units<T extends Unit> {
  */
 class LevelSweep<T extends Unit> {
   private out = Sequence.of<T>([]);
-  /** The last unit placed, kept out of `out` while the boundary after it may change. */
-  private held: T | null = null;
-  /** Whether the boundary after the last unit placed must be written again. */
-  private open = false;
+  /** Whether the boundary after the last neighbor must be written again. */
+  private open: boolean;
+  /** The index among the old units of the last unit placed, or -1 when it is new. */
+  private lastBefore = -1;
   private changed = false;
 
   constructor(readonly level: Level<T>, readonly units: Units<T>, readonly seeds: ReadonlySet<number>,
-    readonly startChanged: boolean, readonly endChanged: boolean) {}
+    readonly startChanged: boolean, readonly endChanged: boolean) {
+    this.open = startChanged;
+  }
 
   sweep(): Sequence<T> {
     const { old, parent, runs } = this.level;
@@ -308,14 +336,15 @@ class LevelSweep<T extends Unit> {
     for (let r = 0; r <= runs.length; r++) {
       const run = runs[r];
       const stop = run ? run.index : parent.childCount;
+      const edgeIndex = run || this.endChanged ? this.lastIndex(old.slice(0, stop - shift), shift) + shift : -1;
       while (index < stop) {
-        const edge = this.seeds.has(index) || !!run && index === stop - 1;
+        const edge = this.seeds.has(index) || index === edgeIndex;
         if (look || edge) {
           const before = index - shift;
           const unit = old.get(before);
           look = this.examine(index++, { node: unit.node, old: unit, before, kept: true, items: null }, false, edge);
         } else {
-          const end = this.nextSeed(index, run ? stop - 1 : stop);
+          const end = this.nextSeed(index, edgeIndex >= index ? edgeIndex : stop);
           this.stretch(index - shift, end - shift);
           index = end;
         }
@@ -323,79 +352,85 @@ class LevelSweep<T extends Unit> {
       if (!run) break;
       this.changed = true;
       for (const entry of run.entries) look = this.examine(index++, entry, true, true);
-      // Units removed with nothing in their place: the unit after them has a new left neighbor.
       if (!run.entries.length) look = this.open = true;
       shift += run.entries.length - (run.to - run.from);
     }
-    const last = this.held ?? (this.open || this.endChanged ? this.takeBack() : null);
-    if (last) this.append(this.open || this.endChanged ? this.reframed(last, this.units.last(last)) : last);
+    const last = this.lastIndex(this.out, 0);
+    if (last >= 0 && (this.open || this.endChanged)) this.replace(last, this.units.last(this.out.get(last)));
     return this.changed ? this.out : old;
   }
 
   private examine(index: number, entry: Entry<T>, inRun: boolean, edge: boolean): boolean {
-    let left = this.held ?? (this.out.count ? this.out.get(this.out.count - 1) : null);
-    // I1: a unit new after a fence left open closes it.
-    if (left && !entry.kept && influence.openFence(left)) left = this.replaceLeft(index - 1, left);
+    const at = this.lastIndex(this.out, 0);
+    let left = at < 0 ? null : this.out.get(at);
+    // I1: a fence that nothing followed now has a follower. An omitted child is none.
+    if (left && !this.units.drops(index) && influence.openFence(left) &&
+      !followedBefore(this.level.old, this.lastBefore, this.units.followedBefore)) {
+      const before = this.lastIndex(this.out.slice(0, at), 0);
+      left = this.units.close(at, left, before < 0 ? null : this.out.get(before), this.lastBefore);
+      this.replace(at, left);
+      this.open = true;
+    }
     const value = this.units.examine(index, entry, left, edge);
     const written = value !== entry.old;
     if (written) this.changed = true;
-    this.put(value, inRun || written);
-    return written;
+    this.put(index, value, inRun || written);
+    if (value.length || !this.units.drops(index)) this.lastBefore = entry.before;
+    return written || !value.length && this.units.drops(index) && this.open;
   }
 
-  /** The last placed unit, written again where it stands. */
-  private replaceLeft(index: number, left: T): T {
-    if (!this.held) this.takeBack();
-    else this.held = null;
-    const before = this.held ?? (this.out.count ? this.out.get(this.out.count - 1) : null);
-    const closed = this.units.close(index, left, before);
-    this.changed = true;
-    this.held = closed;
-    this.open = true;
-    return closed;
-  }
-
-  /** Place a unit after the last, writing the boundary between them where either side asks. */
-  private put(value: T, touched: boolean): void {
-    const left = this.held ?? (this.out.count && (touched || this.open) ? this.takeBack() : null);
-    if (left) {
-      if (touched || this.open) {
-        const [framedLeft, framedRight] = this.units.between(left, value);
-        value = this.reframed(value, framedRight);
-        this.append(this.reframed(left, framedLeft));
-      } else this.append(left);
-    } else if (!this.out.count && (touched || this.open || this.startChanged))
-      value = this.reframed(value, this.units.first(value));
-    this.held = value;
+  /** Place a child, leaving an omitted child's neighbors and boundary adjacent. */
+  private put(index: number, value: T, touched: boolean): void {
+    if (!value.length && this.units.drops(index)) {
+      this.out = this.out.append(Sequence.of([value]));
+      this.open ||= touched;
+      return;
+    }
+    const at = this.lastIndex(this.out, 0);
+    if (touched || this.open) {
+      if (at >= 0) {
+        const [left, right] = this.units.between(this.out.get(at), value);
+        this.replace(at, left);
+        if (value !== right) this.changed = true;
+        value = right;
+      } else {
+        const first = this.units.first(value);
+        if (first !== value) this.changed = true;
+        value = first;
+      }
+    }
+    this.out = this.out.append(Sequence.of([value]));
     this.open = touched;
   }
 
-  private reframed(unit: T, framed: T): T {
-    if (framed !== unit) this.changed = true;
-    return framed;
+  private replace(index: number, unit: T): void {
+    if (this.out.get(index) === unit) return;
+    this.changed = true;
+    this.out = this.out.replace(index, index + 1, Sequence.of([unit]));
   }
 
-  /** Old units `from` to `to`, untouched and unexamined: shared whole, but for a first that a boundary needs. */
+  /** An untouched stretch is shared whole. Lengths skip its omitted prefix in one query. */
   private stretch(from: number, to: number): void {
     const old = this.level.old;
-    if (from < to && (this.open || !this.held && !this.out.count && this.startChanged))
-      this.put(old.get(from++), false);
-    if (from >= to) return;
-    if (this.held) this.append(this.held);
-    this.held = null;
+    if (from < to && this.open) {
+      const part = old.slice(from, to);
+      let next = from;
+      if (!part.get(0).length && this.units.drops(this.out.count))
+        next += part.length ? part.atSource(0).index : part.count;
+      this.out = this.out.append(old.slice(from, next));
+      from = next;
+      if (from < to) this.put(this.out.count, old.get(from++), false);
+    }
     this.out = this.out.append(old.slice(from, to));
+    // Omitted units have no text, so the old text after the last of these is that after the last neighbor.
+    if (from < to) this.lastBefore = to - 1;
   }
 
-  /** The last placed unit, taken back to write the boundary after it. */
-  private takeBack(): T {
-    const count = this.out.count;
-    const unit = this.out.get(count - 1);
-    this.out = this.out.slice(0, count - 1);
-    return unit;
-  }
-
-  private append(unit: T): void {
-    this.out = this.out.append(Sequence.of([unit]));
+  /** The last neighbor, with zero-length stretches skipped by the sequence's measurements. */
+  private lastIndex(units: Sequence<T>, shift: number): number {
+    const last = units.count - 1;
+    if (last < 0 || units.get(last).length || !this.units.drops(last + shift)) return last;
+    return units.length ? units.atSource(units.length - 1).index : -1;
   }
 
   private nextSeed(from: number, to: number): number {
@@ -406,49 +441,104 @@ class LevelSweep<T extends Unit> {
 
 /** The top-level units, framed by the document's own blank lines. */
 class RootUnits implements Units<Unit> {
-  constructor(readonly sweep: SweepContext, readonly trailing: string) {}
+  readonly followedBefore = false;
+
+  constructor(readonly sweep: SweepContext, readonly trailing: string, readonly level: Level<Unit>) {}
+
+  drops(index: number): boolean {
+    return unparse.dropsChild(this.sweep.doc, index, this.sweep.kept.has(index), false, this.sweep.options);
+  }
+
+  firstIndex(units: Sequence<Unit>): number {
+    if (units.get(0).length || !this.drops(0)) return 0;
+    return units.length ? units.atSource(0).index : -1;
+  }
 
   examine(index: number, entry: Entry<Unit>, left: Unit | null, edge: boolean): Unit {
     if (entry.node.type.isInGroup('list')) return this.list(index, entry, left, edge);
     const old = entry.old instanceof RetainedBlock ? entry.old : null;
-    if (entry.kept && !this.reached(index, old!, left)) return old!;
+    if (entry.kept && !this.reached(index, entry, left)) return old!;
+    // The unparser's drop decision needs no following boundary. In particular, a run of
+    // omitted children must not ask the same following-neighbor question once per child.
+    if (this.drops(index)) {
+      if (!old || old.length) this.sweep.textChanged = true;
+      return new RetainedBlock(entry.node, '', '', '', null, Closing.none);
+    }
     return this.sweep.write(entry.node, old, this.place(index, left));
   }
 
-  close(index: number, unit: Unit, left: Unit | null): Unit {
-    return this.sweep.write(unit.node, unit as RetainedBlock, this.place(index, left));
+  close(index: number, unit: Unit, left: Unit | null, before: number): Unit {
+    // A list's open fence is in its last item, which the item level writes again (I1).
+    if (unit instanceof RetainedList)
+      return this.list(index, { node: unit.node, old: unit, before, kept: true, items: null }, left, true);
+    return this.sweep.write(unit.node, unit, this.place(index, left));
   }
 
   /** I5: the first unit, a thematic break, written again at the start of the file. */
-  rewriteFirst(units: Sequence<Unit>): Sequence<Unit> {
-    const first = units.get(0) as RetainedBlock;
-    const written = this.first(this.sweep.write(first.node, first, this.place(0, null)));
-    if (units.count === 1) return Sequence.of([this.last(written)]);
-    const [left, right] = this.between(written, units.get(1));
-    return units.replace(0, 2, Sequence.of([left, right]));
+  rewriteFirst(units: Sequence<Unit>, index: number): Sequence<Unit> {
+    const first = units.get(index) as RetainedBlock;
+    const written = this.first(this.sweep.write(first.node, first, this.place(index, null)));
+    const tail = units.slice(index + 1, units.count);
+    let next = index + 1;
+    if (tail.count && !tail.get(0).length && this.drops(next))
+      next += tail.length ? tail.atSource(0).index : tail.count;
+    if (next === units.count) return units.replace(index, index + 1, Sequence.of([this.last(written)]));
+    const [left, right] = this.between(written, units.get(next));
+    return units.replace(index, index + 1, Sequence.of([left])).replace(next, next + 1, Sequence.of([right]));
   }
 
-  /** Whether an influence whose trigger occurs here reaches a kept unit: I2, I4, I8, I9. */
-  private reached(index: number, unit: RetainedBlock, left: Unit | null): boolean {
-    const doc = this.sweep.doc;
-    return !!left && influence.continued(left, unit, null) || influence.emptyExposed(unit, doc, index) ||
-      index === doc.childCount - 1 && influence.fenceAtEnd(unit, this.terminated(index));
+  /** I2, I4, I8, I9 and I10, at the neighbors and place this kept unit now has. */
+  private reached(index: number, entry: Entry<Unit>, left: Unit | null): boolean {
+    const unit = entry.old!;
+    const sweep = this.sweep;
+    return !!left && influence.continued(left, unit, null) ||
+      !this.drops(index) && influence.emptyExposed(unit, sweep.doc, index) ||
+      influence.fenceAtEnd(unit, this.terminated(index)) ||
+      // I10: an empty paragraph the option governs, whose keeping changed.
+      sweep.oldKept!.has(entry.before) !== sweep.kept.has(index) &&
+        unparse.dropsChild(sweep.doc, index, false, false, sweep.options);
   }
 
   /** Where a top-level unit is written. */
   private place(index: number, left: Unit | null): DisambiguationContext {
     const doc = this.sweep.doc;
+    const followed = this.followed(index);
     return {
       column: 0, laterColumn: 0, preceding: left?.closing ?? null,
-      followed: index + 1 < doc.childCount, terminated: this.terminated(index),
+      followed, terminated: this.terminated(index, followed),
       parent: doc, index, loose: true,
     };
   }
 
   /** Whether a line ending follows the unit's last line in the file. */
-  private terminated(index: number): boolean {
+  private terminated(index: number, followed = this.followed(index)): boolean {
     const doc = this.sweep.doc;
-    return index + 1 < doc.childCount || blanks(doc, 'end') > 0 || this.sweep.properties.endsWithLineEnding;
+    return followed || blanks(doc, 'end') > 0 || this.sweep.properties.endsWithLineEnding;
+  }
+
+  /** Whether a child not left out follows: kept text counts until that unit is rewritten. */
+  private followed(index: number): boolean {
+    const { old, parent, runs } = this.level;
+    if (this.sweep.options.keepEmptyParagraph === 'keep-all-with-zwsp') return index + 1 < parent.childCount;
+    let from = index + 1;
+    let shift = 0;
+    for (let r = 0; r <= runs.length && from < parent.childCount; r++) {
+      const run = runs[r];
+      const stop = run ? run.index : parent.childCount;
+      if (from < stop) {
+        const kept = old.slice(from - shift, stop - shift);
+        if (kept.length || !this.drops(from)) return true;
+        from = stop;
+      }
+      if (!run) break;
+      const end = run.index + run.entries.length;
+      for (; from < end; from++) {
+        const entry = run.entries[from - run.index]!;
+        if (!this.drops(from) || entry.kept && entry.old!.length > 0) return true;
+      }
+      shift += run.entries.length - (run.to - run.from);
+    }
+    return false;
   }
 
   /**
@@ -460,8 +550,9 @@ class RootUnits implements Units<Unit> {
     const level = entry.items ?? { old: old!.items, parent: entry.node, runs: [] };
     const seeds = new Set([0]);
     if (edge) seeds.add(entry.node.childCount - 1);
-    const items = new LevelSweep(level, new ItemUnits(this.sweep, index, entry.node, left), seeds, false, false)
-      .sweep();
+    const units = new ItemUnits(this.sweep, entry.node, left, this.followed(index),
+      followedBefore(this.level.old, entry.before, false), level.old);
+    const items = new LevelSweep(level, units, seeds, false, false).sweep();
     if (entry.kept && items === old!.items) return old!;
     return new RetainedList(entry.node, old?.leading ?? '', items, old?.trailing ?? '');
   }
@@ -502,8 +593,15 @@ class RootUnits implements Units<Unit> {
 
 /** The items of one top-level list. Its own blank lines are the root level's. */
 class ItemUnits implements Units<RetainedBlock> {
-  constructor(readonly sweep: SweepContext, readonly element: number, readonly list: Node,
-    readonly left: Unit | null) {}
+  /**
+   * @param followed Whether a unit not left out follows the list now.
+   * @param followedBefore Whether text followed it in the old file.
+   * @param items The list's old items.
+   */
+  constructor(readonly sweep: SweepContext, readonly list: Node, readonly left: Unit | null,
+    readonly followed: boolean, readonly followedBefore: boolean, readonly items: Sequence<RetainedBlock>) {}
+
+  drops(_index: number): boolean { return false; }
 
   examine(index: number, entry: Entry<RetainedBlock>, left: RetainedBlock | null): RetainedBlock {
     if (entry.kept && !this.reached(index, entry, left)) return entry.old!;
@@ -514,20 +612,21 @@ class ItemUnits implements Units<RetainedBlock> {
     return this.sweep.write(unit.node, unit, this.place(index, left));
   }
 
-  /** Whether an influence whose trigger occurs here reaches a kept item: I2, I3, I6, I9. */
+  /** Whether an influence whose trigger occurs here reaches a kept item: I1, I2, I3, I6, I9. */
   private reached(index: number, entry: Entry<RetainedBlock>, left: RetainedBlock | null): boolean {
     const unit = entry.old!;
     const neighbor = left ?? this.left;
     return !!neighbor && influence.continued(neighbor, unit, left ? this.list : null) ||
       influence.repatterned(this.list, unit, index, neighbor?.closing ?? null) ||
       influence.renumbered(this.list, entry.node, entry.before, index) ||
-      index === this.list.childCount - 1 && this.element === this.sweep.doc.childCount - 1 &&
-        influence.fenceAtEnd(unit, this.terminated(index));
+      index === this.list.childCount - 1 && (this.followed
+        ? influence.openFence(unit) && !followedBefore(this.items, entry.before, this.followedBefore)
+        : influence.fenceAtEnd(unit, this.terminated(index)));
   }
 
   /** Where an item of the list is written. */
   private place(index: number, left: RetainedBlock | null): DisambiguationContext {
-    const followed = index + 1 < this.list.childCount || this.element + 1 < this.sweep.doc.childCount;
+    const followed = index + 1 < this.list.childCount || this.followed;
     return {
       column: 0, laterColumn: 0, preceding: (left ?? this.left)?.closing ?? null,
       followed, terminated: followed || this.terminated(index),
@@ -538,7 +637,7 @@ class ItemUnits implements Units<RetainedBlock> {
   /** Whether a line ending follows the item's last line in the file. */
   private terminated(index: number): boolean {
     const { doc, properties } = this.sweep;
-    return index + 1 < this.list.childCount || this.element + 1 < doc.childCount || blanks(this.list, 'end') > 0 ||
+    return index + 1 < this.list.childCount || this.followed || blanks(this.list, 'end') > 0 ||
       blanks(doc, 'end') > 0 || properties.endsWithLineEnding;
   }
 
@@ -558,10 +657,37 @@ class ItemUnits implements Units<RetainedBlock> {
   /** The last item owns only its last line's ending; the blank lines after it are the list's. */
   last(unit: RetainedBlock): RetainedBlock {
     const { doc, properties } = this.sweep;
-    const ending = this.element + 1 < doc.childCount || blanks(this.list, 'end') > 0 || blanks(doc, 'end') > 0 ||
+    const ending = this.followed || blanks(this.list, 'end') > 0 || blanks(doc, 'end') > 0 ||
       properties.endsWithLineEnding;
     return this.sweep.frame(unit, unit.leading, boundaryText(unit.trailing, Number(ending && unit.body.length > 0)));
   }
+}
+
+/**
+ * Whether text followed the old unit at `before` in the old file: a later unit of its level, or,
+ * when `outside`, something after the level. False for a unit that is new (I1).
+ */
+function followedBefore<T extends Unit>(old: Sequence<T>, before: number, outside: boolean): boolean {
+  return before >= 0 && (outside || old.slice(before + 1, old.count).length > 0);
+}
+
+/** The unit holding the file's first character, or the first unit when the units have no text. */
+function firstWritten(units: Sequence<Unit>): Unit {
+  return units.get(units.length ? units.atSource(0).index : 0);
+}
+
+/** An old child index through the transaction's runs; a removed child maps to its cut. */
+function mappedIndex<T extends Unit>(index: number, runs: readonly Run<T>[]): number {
+  let shift = 0;
+  for (const run of runs) {
+    if (index < run.from) break;
+    if (index < run.to) {
+      const kept = run.entries.findIndex(entry => entry.before === index);
+      return run.index + (kept < 0 ? 0 : kept);
+    }
+    shift += run.entries.length - (run.to - run.from);
+  }
+  return index + shift;
 }
 
 /** The unit holding a position, or the end: its index and start. */

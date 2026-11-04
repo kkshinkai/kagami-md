@@ -6,12 +6,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 /**
- * A tag, `#a`, `#a/b`, or a paired tag closed by `#`, `#a b#`, whose name may hold spaces.
- * Kagami's own. The paired tag is tried first; it takes spaces only when a closing `#` follows,
- * so an unfinished pair cannot swallow the rest of a paragraph, and the bare tag is tried
- * after it. A tag starts at a word boundary, so a fragment in a URL or an identifier is no
- * tag. A name holds Unicode letters, numbers and combining marks, `_` and `-` (the dialect's
- * `tagName`); `/` separates segments that are not empty.
+ * A tag, `#a` and `#a/b`: a `#` at a boundary followed by the longest run of name
+ * characters, holding at least one character that is neither a number nor `/`. Kagami's
+ * own, as [Tags](../../../../private-docs/rules/tags.md) decides. A name holds Unicode
+ * letters, numbers and combining marks, `_` and `-` (the dialect's `tagName`), and `/`.
+ * Nothing closes a tag; the first character outside the name ends it.
  */
 import type {
   Code,
@@ -19,13 +18,13 @@ import type {
   ConstructRecord,
   Effects,
   State,
-  TokenizeContext,
-  Tokenizer
+  TokenizeContext
 } from '../../types/index.js';
 import { assert } from '../../kernel/assert.js';
 import { markdownLineEndingOrSpace } from '../../kernel/utils/character/index.js';
 import {
   contains,
+  number,
   punctuation,
   tagName,
   whitespace as whitespaceRanges,
@@ -33,162 +32,121 @@ import {
 import { previousCodePoint } from '../../kernel/utils/cjk/index.js';
 import { codes } from '../../kernel/utils/symbol/index.js';
 
-const pairedTag: Construct = { name: 'pairedTag', tokenize: createTokenizer(true) };
-const bareTag: Construct = { name: 'bareTag', tokenize: createTokenizer(false) };
+const tag: Construct = { name: 'tag', tokenize: tokenizeTag };
 const surrogatePair: Construct = { partial: true, tokenize: tokenizeSurrogatePair };
 
-export const text: ConstructRecord = { [codes.numberSign]: [pairedTag, bareTag] };
+export const text: ConstructRecord = { [codes.numberSign]: [tag] };
 
 /**
- * Create a tokenizer of a tag.
+ * Tokenize a tag.
  *
- * @param paired
- *   Whether the tag is closed by `#`.
  * @returns
- *   Tokenizer.
+ *   State.
  */
-function createTokenizer(paired: boolean): Tokenizer {
-  return tokenizeTag;
+function tokenizeTag(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
+  const previous = previousCodePoint(this);
+  let valid = false;
+  let high = 0;
 
-  function tokenizeTag(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
-    const previous = previousCodePoint(this);
-    let named = false;
-    let separated = false;
+  return start;
 
-    return start;
+  /**
+   * Start of a tag.
+   *
+   * ```markdown
+   * > | a #b c
+   *       ^
+   * ```
+   */
+  function start(code: Code): State | undefined {
+    assert(code === codes.numberSign, 'expected `#`');
 
-    /**
-     * Start of a tag.
-     *
-     * ```markdown
-     * > | a #b c
-     *       ^
-     * ```
-     */
-    function start(code: Code): State | undefined {
-      assert(code === codes.numberSign, 'expected `#`');
+    if (!boundary(previous)) {
+      return nok(code);
+    }
 
-      if (!boundary(previous)) {
-        return nok(code);
-      }
+    effects.enter('tag');
+    effects.enter('tagMarker');
+    effects.consume(code);
+    effects.exit('tagMarker');
+    effects.enter('tagName');
+    return name;
+  }
 
-      effects.enter('tag');
-      effects.enter('tagMarker');
+  /**
+   * In the name.
+   *
+   * ```markdown
+   * > | a #b/c d
+   *        ^^^
+   * ```
+   */
+  function name(code: Code): State | undefined {
+    // A character outside the basic plane is two units: both are its.
+    if (code !== codes.eof && code >= 0xd8_00 && code <= 0xdb_ff) {
+      return effects.check(surrogatePair, highSurrogate, end)(code);
+    }
+
+    if (code !== codes.eof && code > 0 && contains(tagName, code)) {
       effects.consume(code);
-      effects.exit('tagMarker');
-      effects.enter('tagName');
+      if (!contains(number, code)) valid = true;
       return name;
     }
 
-    /**
-     * In the name.
-     *
-     * ```markdown
-     * > | a #b/c d
-     *        ^^^
-     * ```
-     */
-    function name(code: Code): State | undefined {
-      // A character outside the basic plane is two units: both are its.
-      if (code !== codes.eof && code >= 0xd8_00 && code <= 0xdb_ff) {
-        return effects.check(surrogatePair, highSurrogate, end)(code);
-      }
-
-      if (code !== codes.eof && code > 0 && contains(tagName, code)) {
-        effects.consume(code);
-        named = true;
-        separated = false;
-        return name;
-      }
-
-      if (code === codes.slash && named && !separated) {
-        effects.consume(code);
-        separated = true;
-        return name;
-      }
-
-      if (paired && code === codes.space && named && !separated) {
-        effects.consume(code);
-        separated = true;
-        return spaces;
-      }
-
-      return end(code);
-    }
-
-    /**
-     * In spaces in the name of a paired tag.
-     *
-     * ```markdown
-     * > | #a  b#
-     *        ^
-     * ```
-     */
-    function spaces(code: Code): State | undefined {
-      if (code === codes.space) {
-        effects.consume(code);
-        return spaces;
-      }
-
-      return name(code);
-    }
-
-    /**
-     * At the high surrogate of a character of the name.
-     *
-     * ```markdown
-     * > | #a𝒜
-     *       ^
-     * ```
-     */
-    function highSurrogate(code: Code): State | undefined {
+    if (code === codes.slash) {
       effects.consume(code);
-      return lowSurrogate;
-    }
-
-    /**
-     * At its low surrogate.
-     *
-     * ```markdown
-     * > | #a𝒜
-     *       ^
-     * ```
-     */
-    function lowSurrogate(code: Code): State | undefined {
-      effects.consume(code);
-      named = true;
-      separated = false;
       return name;
     }
 
-    /**
-     * After the name.
-     *
-     * ```markdown
-     * > | a #b c
-     *         ^
-     * > | #a b#
-     *          ^
-     * ```
-     */
-    function end(code: Code): State | undefined {
-      if (!named || separated || (paired && code !== codes.numberSign)) {
-        return nok(code);
-      }
+    return end(code);
+  }
 
-      effects.exit('tagName');
+  /**
+   * At the high surrogate of a character of the name.
+   *
+   * ```markdown
+   * > | #a𝒜
+   *       ^
+   * ```
+   */
+  function highSurrogate(code: Code): State | undefined {
+    assert(code !== codes.eof, 'expected a surrogate');
+    high = code;
+    effects.consume(code);
+    return lowSurrogate;
+  }
 
-      if (paired) {
-        effects.enter('tagMarker');
-        effects.consume(code);
-        effects.exit('tagMarker');
-        effects.exit('tag');
-        return ok;
-      }
+  /**
+   * At its low surrogate.
+   *
+   * ```markdown
+   * > | #a𝒜
+   *       ^
+   * ```
+   */
+  function lowSurrogate(code: Code): State | undefined {
+    assert(code !== codes.eof, 'expected a surrogate');
+    effects.consume(code);
+    if (!contains(number, String.fromCharCode(high, code).codePointAt(0)!)) valid = true;
+    return name;
+  }
 
-      effects.exit('tag');
-      return ok(code);
+  /**
+   * After the name.
+   *
+   * ```markdown
+   * > | a #b c
+   *         ^
+   * ```
+   */
+  function end(code: Code): State | undefined {
+    if (!valid) {
+      return nok(code);
     }
+
+    effects.exit('tagName');
+    effects.exit('tag');
+    return ok(code);
   }
 }
 

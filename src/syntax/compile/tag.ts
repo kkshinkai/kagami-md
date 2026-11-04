@@ -11,7 +11,7 @@ import type { CompileContext, Extension } from './types.js';
 import { assert } from '../kernel/assert.js';
 
 /**
- * Create an extension to enable tags, `#a` and `#a b#`, Kagami’s own.
+ * Create an extension to enable tags, `#a` and `#a/b`, Kagami’s own.
  *
  * @returns
  *   Extension.
@@ -34,20 +34,11 @@ function enterTag(this: CompileContext, token: Token): undefined {
 function exitTagMarker(this: CompileContext, token: Token): undefined {
   const node = this.stack[this.stack.length - 1];
   assert(node && node instanceof TagSyntax);
-
-  if (token.start.offset === node.start) {
-    node.openingNumberSign = new DelimiterTokenSyntax(
-      'openingNumberSign',
-      token.start.offset,
-      token.end.offset
-    );
-  } else {
-    node.closingNumberSign = new DelimiterTokenSyntax(
-      'closingNumberSign',
-      token.start.offset,
-      token.end.offset
-    );
-  }
+  node.openingNumberSign = new DelimiterTokenSyntax(
+    'openingNumberSign',
+    token.start.offset,
+    token.end.offset
+  );
 }
 
 function exitTagName(this: CompileContext, token: Token): undefined {

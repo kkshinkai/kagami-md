@@ -44,7 +44,6 @@ export type DelimiterTokenKind =
   | 'closingAngleBracket'
   | 'closingBracket'
   | 'closingColon'
-  | 'closingNumberSign'
   | 'closingParenthesis'
   | 'closingWikiBrackets'
   | 'codeFence'
@@ -1096,15 +1095,8 @@ export class TagSyntax extends InlineSyntax {
   openingNumberSign!: DelimiterTokenSyntax<'openingNumberSign'>;
   name!: TextTokenSyntax<'tagName'>;
 
-  /** The `#` that closes a paired tag; null for a tag that is not closed. */
-  closingNumberSign: DelimiterTokenSyntax<'closingNumberSign'> | null = null;
-
   protected override childNodes(): ReadonlyArray<Syntax> {
-    return [
-      this.openingNumberSign,
-      this.name,
-      ...(this.closingNumberSign ? [this.closingNumberSign] : []),
-    ];
+    return [this.openingNumberSign, this.name];
   }
 
   override get firstChild(): Syntax | null {
@@ -1112,7 +1104,7 @@ export class TagSyntax extends InlineSyntax {
   }
 
   override get lastChild(): Syntax | null {
-    return this.closingNumberSign ?? this.name;
+    return this.name;
   }
 
   override accept<R>(visitor: SyntaxVisitor<R>): R {

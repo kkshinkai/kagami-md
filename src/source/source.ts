@@ -15,6 +15,7 @@ import { Mapping, type Step } from 'prosemirror-transform';
 import { parse } from '../parse/parse.js';
 import { readBody } from '../parse/edges.js';
 import { Closing } from '../unparse/unparsed.js';
+import { unparse } from '../unparse/unparse.js';
 import { schema } from '../types/schema.js';
 import type { EditorLoc, SourceLoc } from './location.js';
 import { SourceMap } from './map.js';
@@ -42,19 +43,20 @@ export class Source {
   private constructor(
     readonly doc: Node,
     readonly properties: FileProperties,
+    readonly options: unparse.Options,
     /** Current after every settled edit; never computed on reading. */
     readonly tree: RetainedDoc,
     private readonly revision: object,
     private readonly edits: readonly Transaction[],
   ) {}
 
-  static create(doc: Node, properties: FileProperties, tree: RetainedDoc): Source {
-    return new Source(doc, properties, tree, {}, []);
+  static create(doc: Node, properties: FileProperties, options: unparse.Options, tree: RetainedDoc): Source {
+    return new Source(doc, properties, options, tree, {}, []);
   }
 
   /** The source of a document that has no file, written once. */
-  static write(doc: Node, properties: FileProperties): Source {
-    return Source.create(doc, properties, sweep.write(doc, properties).tree);
+  static write(doc: Node, properties: FileProperties, options: unparse.Options): Source {
+    return Source.create(doc, properties, options, sweep.write(doc, properties, options).tree);
   }
 
   /** Whether every transaction of the edit has been swept. */
@@ -67,7 +69,7 @@ export class Source {
 
   /** Keep a document-changing transaction for the edit's settlement. */
   update(tr: Transaction): Source {
-    return tr.docChanged ? new Source(this.doc, this.properties, this.tree, this.revision, this.edits.concat(tr))
+    return tr.docChanged ? new Source(this.doc, this.properties, this.options, this.tree, this.revision, this.edits.concat(tr))
       : this;
   }
 
@@ -82,7 +84,7 @@ export class Source {
     }
     const doc = this.edits[this.edits.length - 1]!.doc;
     const swept = sweep(this, doc, steps, mapping);
-    return new Source(doc, this.properties, swept.tree, swept.textChanged ? {} : this.revision, []);
+    return new Source(doc, this.properties, this.options, swept.tree, swept.textChanged ? {} : this.revision, []);
   }
 
   /** Whether no edit between the two changed the file's text. */
@@ -97,13 +99,13 @@ export class Source {
   /** Expensive, and for the outside only (private-docs/concepts/near-red-green.md). */
   sourceToEditor(location: SourceLoc): EditorLoc {
     this.checkSettled();
-    return new SourceMap(this.tree).sourceToEditor(location);
+    return new SourceMap(this.tree, this.options).sourceToEditor(location);
   }
 
   /** Expensive, and for the outside only (private-docs/concepts/near-red-green.md). */
   editorToSource(location: EditorLoc): SourceLoc {
     this.checkSettled();
-    return new SourceMap(this.tree).editorToSource(location);
+    return new SourceMap(this.tree, this.options).editorToSource(location);
   }
 
   private checkSettled(): void {
@@ -153,20 +155,20 @@ export namespace source {
 }
 
 /** Read a file once, constructing its editor nodes and retained units together. */
-export function read(markdown: string): InitializedDocument {
+export function read(markdown: string, options: unparse.Options): InitializedDocument {
   const file = parseFile(markdown, { target: 'editor' });
   return read.syntax(file.document, file.text, schema, Object.freeze({
     byteOrderMark: file.byteOrderMark,
     lineEnding: file.lineEnding,
     endsWithLineEnding: file.endsWithLineEnding,
-  }));
+  }), options);
 }
 
 export namespace read {
   /** Construct source and editor content from an existing file reading. */
   export function syntax(syntax: DocumentSyntax, text: string, schema: Schema,
-    properties: FileProperties): InitializedDocument {
-    return new ReadContext(text, schema).document(syntax, properties);
+    properties: FileProperties, options: unparse.Options): InitializedDocument {
+    return new ReadContext(text, schema).document(syntax, properties, options);
   }
 }
 
@@ -174,7 +176,7 @@ export namespace read {
 class ReadContext {
   constructor(readonly text: string, readonly schema: Schema) {}
 
-  document(syntax: DocumentSyntax, properties: FileProperties): InitializedDocument {
+  document(syntax: DocumentSyntax, properties: FileProperties, options: unparse.Options): InitializedDocument {
     const fields = new Map<Node, ReferenceLabels>();
     const readings: (BlockSyntax | FrontMatterSyntax | null)[] = [];
     const children: Node[] = [];
@@ -201,7 +203,7 @@ class ReadContext {
     const from = syntax.firstChild?.start ?? syntax.end - syntax.trailing;
     const to = syntax.lastChild?.end ?? from;
     const tree = new RetainedDoc(this.text.slice(0, from), Sequence.of(units), this.text.slice(to));
-    const source = Source.create(doc, properties, tree);
+    const source = Source.create(doc, properties, options, tree);
     return { doc, source, readings: fields };
   }
 

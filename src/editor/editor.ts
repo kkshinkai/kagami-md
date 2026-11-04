@@ -42,7 +42,7 @@ export class KagamiMD extends Destroyable {
     super();
     this.spec = spec;
     this.ownsState = !spec.state;
-    this.state = spec.state ?? KagamiMD.State.create({ doc: spec.doc });
+    this.state = spec.state ?? KagamiMD.State.create(spec);
     if (this.state.isDestroyed()) throw new Error('Editor state is destroyed');
     this.readOnlyValue = spec.readOnly ?? false;
     this.dom = createEditorElement(document, this);
@@ -165,11 +165,9 @@ export class KagamiMD extends Destroyable {
 
 export namespace KagamiMD {
   /** What {@link KagamiMD.create} is given. Every field may be left out. */
-  export interface Spec {
+  export interface Spec extends State.Spec {
     /** When given, the editor's element is appended to it. */
     readonly parent?: Element | DocumentFragment;
-    /** The Markdown text to begin with. Not used when a `state` is given. */
-    readonly doc?: string;
     /** A document made beforehand with {@link State.create}. The editor does not destroy it. */
     readonly state?: State;
     readonly readOnly?: boolean;

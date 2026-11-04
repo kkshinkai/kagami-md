@@ -34,6 +34,7 @@
   --editor-tag-bg: #eeedeb;
   --editor-tag-color: #565451;
   --editor-tag-marker-color: #aaa6a0;
+  --editor-tag-icon: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23aaa6a0'%20stroke-width='1.65'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cline%20x1='4'%20x2='20'%20y1='9'%20y2='9'/%3E%3Cline%20x1='4'%20x2='20'%20y1='15'%20y2='15'/%3E%3Cline%20x1='10'%20x2='8'%20y1='3'%20y2='21'/%3E%3Cline%20x1='16'%20x2='14'%20y1='3'%20y2='21'/%3E%3C/svg%3E");
   --editor-tag-edit-marker-color: #98938d;
   --editor-tag-slash-color: #a9a39c;
   --editor-callout-note-color: #376b92;
@@ -76,6 +77,7 @@
   --editor-tag-bg: #333333;
   --editor-tag-color: #d3d3d3;
   --editor-tag-marker-color: #969696;
+  --editor-tag-icon: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%20fill='none'%20stroke='%23969696'%20stroke-width='1.65'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cline%20x1='4'%20x2='20'%20y1='9'%20y2='9'/%3E%3Cline%20x1='4'%20x2='20'%20y1='15'%20y2='15'/%3E%3Cline%20x1='10'%20x2='8'%20y1='3'%20y2='21'/%3E%3Cline%20x1='16'%20x2='14'%20y1='3'%20y2='21'/%3E%3C/svg%3E");
   --editor-tag-edit-marker-color: #b1b2b8;
   --editor-tag-slash-color: #969696;
   --editor-callout-note-color: #94b9d7;
