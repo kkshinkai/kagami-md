@@ -7,14 +7,17 @@
 
 import { walkInline } from '../parse/inline.js';
 import { compositionState } from '../state/input.js';
-import { DelimitedSyntax, LinkSyntax, Syntax, type Bindings, type Phrasing } from '../syntax/index.js';
+import {
+  DelimitedSyntax, LinkSyntax, Syntax, type Bindings, type Parser, type Phrasing,
+} from '../syntax/index.js';
 import type { Node } from 'prosemirror-model';
 import { PluginKey, TextSelection, type Command, type EditorState, type Transaction } from 'prosemirror-state';
 
-import { bindings } from '../state/bindings.js';
+import { BindingState } from '../state/bindings.js';
+import { getParser } from '../state/parser.js';
 import { readField, fieldSource } from '../parse/field.js';
 import { inlineBody, inlineFormat, inlineFormats, type InlineBranch, type InlineFormat } from './inlineformat.js';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { MarkRange } from './markrange.js';
 
 interface FormattingRange { readonly from: number; readonly to: number }
@@ -78,7 +81,7 @@ export function toggleMark(format: InlineFormat, action: FormatAction = 'toggle'
       const session: FormattingSession = {
         from: state.selection.from, to: state.selection.to, formats, excluded, framing: [],
       };
-      dispatch?.(history.isolate(state.tr).setMeta(formattingPluginKey,
+      dispatch?.(isolateHistory(state.tr).setMeta(formattingPluginKey,
         { kind: 'command', session } satisfies FormattingMeta));
       return true;
     }
@@ -96,8 +99,9 @@ export function toggleMark(format: InlineFormat, action: FormatAction = 'toggle'
     const tr = applyChanges(state.tr, changes);
     const formats = changeSet(previous?.formats ?? [], format, enabled);
     const session = fields.length === 1 && formats.length
-      ? captureFormattingSession(tr.doc, tr.selection.from, tr.selection.to, bindings.after(bindings.get(state), tr), formats) : null;
-    dispatch(history.isolate(tr).setMeta(formattingPluginKey, { kind: 'command', session } satisfies FormattingMeta));
+      ? captureFormattingSession(tr.doc, tr.selection.from, tr.selection.to, getParser(state),
+        BindingState.after(BindingState.get(state), tr), formats) : null;
+    dispatch(isolateHistory(tr).setMeta(formattingPluginKey, { kind: 'command', session } satisfies FormattingMeta));
     return true;
   };
 }
@@ -119,10 +123,12 @@ export function formattingMode(node: Node): Phrasing | null {
 /** Collects eligible fields without joining disjoint selection ranges. */
 class SelectedFields {
   readonly fields = new Map<number, Field>();
+  readonly parser: Parser;
   readonly bindings: Bindings;
 
   constructor(readonly state: EditorState, readonly format: InlineFormat) {
-    this.bindings = bindings.get(state);
+    this.parser = getParser(state);
+    this.bindings = BindingState.get(state);
   }
 
   read(): Field[] {
@@ -145,7 +151,7 @@ class SelectedFields {
     const mode = formattingMode(node);
     if (!mode) return;
     const value = fieldSource(node);
-    const reading = readField(this.state.doc.resolve(pos + 1), this.bindings);
+    const reading = readField(this.state.doc.resolve(pos + 1), this.parser, this.bindings);
     if (reading.kind === 'blocks') return;
     let from = Math.max(0, start - pos - 1);
     let to = Math.min(value.length, end - pos - 1);
@@ -155,7 +161,9 @@ class SelectedFields {
       if (word) [from, to] = word;
     }
     this.fields.set(pos, {
-      pos, target: new MarkRange({ value, children: reading.children }, from, to, this.format, mode, this.bindings),
+      pos,
+      target: new MarkRange({ value, children: reading.children }, from, to, this.format, mode, this.parser,
+        this.bindings),
     });
   }
 }
@@ -240,13 +248,14 @@ export function captureFormattingSession(
   doc: Node,
   from: number,
   to: number,
+  parser: Parser,
   environment: Bindings,
   formats: readonly InlineFormat[],
   excluded: readonly InlineFormat[] = []
 ): FormattingSession | null {
   const $from = doc.resolve(from);
   if (!$from.sameParent(doc.resolve(to)) || !formattingMode($from.parent)) return null;
-  const reading = readField($from, environment);
+  const reading = readField($from, parser, environment);
   if (reading.kind === 'blocks') return null;
   const start = $from.start();
   const frames: InlineBranch[] = [];

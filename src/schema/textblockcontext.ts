@@ -9,7 +9,6 @@ import { NodeRange, type Node, type NodeType, type ResolvedPos } from 'prosemirr
 import { TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
 import { canSplit } from 'prosemirror-transform';
 
-import { mapTextSelection } from '../state/selection.js';
 import { fieldSource } from '../parse/field.js';
 import { convert, join, lift, move, remove, split } from '../transform/transform.js';
 
@@ -86,18 +85,17 @@ export function isList(node: Node): boolean {
 }
 
 /**
- * A plain text join is legal only for equal block kinds and semantic attributes. Source records
- * and the blank-line boundary being removed do not distinguish content types; heading level,
- * marker form and every other syntax attribute still do. Code blocks have their own line rules.
+ * Whether `current` can join onto the end of `previous`. A paragraph joins onto a paragraph or
+ * a heading, reversing a heading split; two headings join only when their level and form match.
  */
 export function canJoinTextblocks(previous: Node, current: Node): boolean {
-  if (!previous.isTextblock || !current.isTextblock || previous.type !== current.type || previous.type.spec.code)
-    return false;
   const { nodes } = previous.type.schema;
-  if (previous.type === nodes.heading) {
-    return previous.attrs.level === current.attrs.level && previous.attrs.form === current.attrs.form;
-  }
-  return previous.type === nodes.paragraph;
+  if (previous.type === nodes.paragraph) return current.type === nodes.paragraph;
+  if (previous.type !== nodes.heading) return false;
+  if (current.type === nodes.paragraph) return true;
+  return current.type === nodes.heading &&
+    previous.attrs.level === current.attrs.level &&
+    previous.attrs.form === current.attrs.form;
 }
 
 /**
@@ -122,50 +120,135 @@ export function splitAt(tr: Transaction, $pos: ResolvedPos, depth: number): bool
   return true;
 }
 
-export function joinBeside(state: EditorState, context: TextblockContext, direction: -1 | 1): Transaction | null {
-  const start = context.$from.before();
-  const boundary = direction < 0 ? start : start + context.textblock.nodeSize;
-  const $boundary = state.doc.resolve(boundary);
-  const beside = direction < 0 ? $boundary.nodeBefore : $boundary.nodeAfter;
-  if (!beside) return null;
-  const tr = state.tr;
-  let caret: number;
-  if (canJoinTextblocks(context.textblock, beside)) {
-    join(tr, boundary);
-    caret = tr.mapping.map(boundary - 1, -1);
-  } else if (direction < 0 && isList(beside)) {
-    let last = beside.lastChild?.lastChild;
-    let target = boundary - 2;
-    while (last && isList(last)) {
-      last = last.lastChild?.lastChild;
-      target -= 2;
-    }
-    if (!last || !canJoinTextblocks(last, context.textblock)) return null;
-    // The preceding list's last item owns the joined paragraph and the command moves only
-    // this block. Its incoming spelling is chosen by structure, not by the key handler.
-    mapTextSelection(tr, () => move(tr, start, target));
-    caret = target - 1;
-    join(tr, target);
-  } else if (beside.isTextblock && beside.content.size === 0) {
-    const from = direction < 0 ? boundary - beside.nodeSize : boundary;
-    remove(tr, from, from + beside.nodeSize);
-    return tr;
-  } else {
-    return null;
+/** Nearest ancestor cut before `$pos`, stopping at an isolating boundary. */
+export function cutBefore($pos: ResolvedPos): ResolvedPos | null {
+  if ($pos.parent.type.spec.isolating) return null;
+  for (let depth = $pos.depth - 1; depth >= 0; depth--) {
+    if ($pos.index(depth) > 0) return $pos.doc.resolve($pos.before(depth + 1));
+    if ($pos.node(depth).type.spec.isolating) break;
   }
+  return null;
+}
+
+/** Nearest ancestor cut after `$pos`, stopping at an isolating boundary. */
+export function cutAfter($pos: ResolvedPos): ResolvedPos | null {
+  if ($pos.parent.type.spec.isolating) return null;
+  for (let depth = $pos.depth - 1; depth >= 0; depth--) {
+    const parent = $pos.node(depth);
+    if ($pos.index(depth) + 1 < parent.childCount) return $pos.doc.resolve($pos.after(depth + 1));
+    if (parent.type.spec.isolating) break;
+  }
+  return null;
+}
+
+interface CutLeaf {
+  readonly node: Node;
+  readonly pos: number;
+  readonly wrappers: number;
+}
+
+function isContainer(node: Node): boolean {
+  return node.type.isInGroup('container') || isList(node);
+}
+
+function lastBlock(node: Node, end: number): CutLeaf {
+  let current = node;
+  let pos = end;
+  let wrappers = 0;
+  while (isContainer(current) && current.lastChild) {
+    if (!isList(current)) wrappers++;
+    current = current.lastChild;
+    pos--;
+  }
+  return { node: current, pos: pos - current.nodeSize, wrappers };
+}
+
+function firstBlock(node: Node, start: number): CutLeaf {
+  const { listItem } = node.type.schema.nodes;
+  let current = node;
+  let pos = start;
+  let wrappers = 0;
+  while (isContainer(current) && current.firstChild) {
+    if (current.type === listItem && isList(current.firstChild)) break;
+    if (!isList(current)) wrappers++;
+    current = current.firstChild;
+    pos++;
+  }
+  return { node: current, pos, wrappers };
+}
+
+function joinLeaves(tr: Transaction, last: CutLeaf, first: CutLeaf): Transaction {
+  let lastInner = last.pos + last.node.nodeSize - 1;
+  let firstInner = first.pos + 1;
+  for (let count = 0; count < first.wrappers; count++) {
+    const $first = tr.doc.resolve(firstInner);
+    const parentDepth = $first.depth - 1;
+    const range = new NodeRange(
+      tr.doc.resolve($first.before($first.depth)),
+      tr.doc.resolve($first.after($first.depth)),
+      parentDepth,
+    );
+    const step = tr.steps.length;
+    lift(tr, range);
+    const mapping = tr.mapping.slice(step);
+    lastInner = mapping.map(lastInner, -1);
+    firstInner = mapping.map(firstInner, 1);
+  }
+  const $last = tr.doc.resolve(lastInner);
+  const $first = tr.doc.resolve(firstInner);
+  if ($last.after() !== $first.before()) {
+    const moved = move(tr, $first.before(), $last.after());
+    lastInner = moved(lastInner);
+  }
+  const $target = tr.doc.resolve(lastInner);
+  const step = tr.steps.length;
+  join(tr, $target.after());
+  const caret = tr.mapping.slice(step).map($target.pos, -1);
   return tr.setSelection(TextSelection.create(tr.doc, caret));
 }
 
-export function removeEmpty(state: EditorState, context: TextblockContext, direction: -1 | 1): Transaction | null {
-  if (context.textblock.content.size || context.textblock.type !== state.schema.nodes.paragraph) return null;
-  const start = context.$from.before();
-  const end = start + context.textblock.nodeSize;
-  const $boundary = state.doc.resolve(direction < 0 ? start : end);
-  const beside = direction < 0 ? $boundary.nodeBefore : $boundary.nodeAfter;
-  if (!beside) return null;
-  const tr = state.tr;
-  remove(tr, start, end);
-  return tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(start)), direction));
+/** Eliminate or step across the cut beside the caret's textblock. */
+export function joinAcross(state: EditorState, context: TextblockContext, direction: -1 | 1): Transaction | null {
+  const $cut = direction < 0 ? cutBefore(context.$from) : cutAfter(context.$from);
+  if (!$cut) return null;
+  const before = $cut.nodeBefore!;
+  const after = $cut.nodeAfter!;
+  const { nodes } = state.schema;
+  if (canJoinTextblocks(before, after) && before.content.size > 0 && after.content.size > 0) {
+    const tr = state.tr;
+    const step = tr.steps.length;
+    join(tr, $cut.pos);
+    const caret = tr.mapping.slice(step).map($cut.pos - 1, -1);
+    return tr.setSelection(TextSelection.create(tr.doc, caret));
+  }
+  if (context.textblock.type === nodes.paragraph && context.textblock.content.size === 0) {
+    const start = context.$from.before();
+    const tr = state.tr;
+    remove(tr, start, start + context.textblock.nodeSize);
+    return tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(start)), direction));
+  }
+  const neighbor = direction < 0 ? before : after;
+  if (neighbor.type === nodes.paragraph && neighbor.content.size === 0) {
+    const from = direction < 0 ? $cut.pos - neighbor.nodeSize : $cut.pos;
+    const tr = state.tr;
+    remove(tr, from, from + neighbor.nodeSize);
+    return tr.setSelection(TextSelection.create(tr.doc, tr.mapping.map(context.$from.pos)));
+  }
+  const last = lastBlock(before, $cut.pos);
+  const first = firstBlock(after, $cut.pos);
+  if (context.textblock.type === nodes.paragraph) {
+    if (direction < 0 && last.node.type === nodes.linkReferenceDefinition) {
+      const field = last.node.lastChild!;
+      const offset = Math.min(fieldSource(field).length, field.content.size);
+      const end = last.pos + last.node.nodeSize - field.nodeSize + offset;
+      return state.tr.setSelection(TextSelection.create(state.doc, end));
+    }
+    if (direction > 0 && first.node.type === nodes.linkReferenceDefinition) {
+      return state.tr.setSelection(TextSelection.create(state.doc, first.pos + 2));
+    }
+  }
+  if (!canJoinTextblocks(last.node, first.node)) return null;
+  return joinLeaves(state.tr, last, first);
 }
 
 export function cursorContext(state: EditorState): TextblockContext | null {

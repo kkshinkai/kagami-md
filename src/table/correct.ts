@@ -8,7 +8,7 @@
 import type { Node } from 'prosemirror-model';
 import { Plugin, type EditorState, type Transaction } from 'prosemirror-state';
 import { convert } from '../transform/transform.js';
-import { changedRanges } from '../state/changes.js';
+import { transactionChangedRanges } from '../state/changes.js';
 
 /** Keep the first row as the table header after native grid edits. */
 export function tableCorrection(): Plugin {
@@ -17,7 +17,7 @@ export function tableCorrection(): Plugin {
       if (previous.doc === state.doc) return null;
       const correction = new HeaderCorrection(state);
       const visited = new Set<number>();
-      for (const change of changedRanges.of(transactions)) state.doc.nodesBetween(change.start, change.end,
+      for (const change of transactionChangedRanges(transactions)) state.doc.nodesBetween(change.start, change.end,
         (node, position) => {
           // Two ranges can reach one table; it is corrected once.
           if (node.type === state.schema.nodes.table && visited.has(position)) return false;

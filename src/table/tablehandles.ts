@@ -5,13 +5,17 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { input } from '../editor/input.js';
+import { routeHistoryKey } from '../editor/input.js';
 import { canRunCommand } from '../state/input.js';
-import type { EditorState } from 'prosemirror-state';
+import type { Command as PMCommand, EditorState } from 'prosemirror-state';
 import { CellSelection, type Rect } from 'prosemirror-tables';
-import { findEditor } from '../editor/dom.js';
-import * as command from '../command/command.js';
-import { Table, tables } from './table.js';
+import { ControlHold } from '../editor/hold.js';
+import type { KagamiMD } from '../editor/editor.js';
+import type { EditorLoc } from '../source/index.js';
+import {
+  alignTableColumns, deleteTableColumn, deleteTableRow, insertTableAxis, moveTableColumn, moveTableRow, onTableAxis,
+  tableGrid,
+} from './table.js';
 import { TableDrag } from './tabledrag.js';
 import type { TableView } from './tableview.js';
 
@@ -46,6 +50,8 @@ export class TableHandles {
   readonly addColumn: HTMLDivElement;
   readonly handles: Handle[];
   readonly drag: TableDrag;
+  private readonly holds: Record<TableHandles.Axis, ControlHold>;
+  private readonly heldAxes = new Set<TableHandles.Axis>();
   document: Document;
   window: Window;
   connected = false;
@@ -56,6 +62,7 @@ export class TableHandles {
   selected: Target | null = null;
   observer: ResizeObserver | null = null;
   frame: number | null = null;
+  private destroyed = false;
 
   constructor(readonly owner: TableView) {
     this.document = owner.dom.ownerDocument;
@@ -78,6 +85,10 @@ export class TableHandles {
     for (const handle of this.handles) this.controls.append(handle.dom);
     this.controls.append(this.addRow, this.addColumn);
     this.owner.dom.append(this.controls);
+    this.holds = {
+      row: this.controlHold('row'),
+      column: this.controlHold('column'),
+    };
     this.drag = new TableDrag(this);
     this.controls.addEventListener('pointerdown', this.drag.pointerDown, true);
     this.controls.addEventListener('mousedown', this.drag.mouseDown, true);
@@ -153,7 +164,7 @@ export class TableHandles {
     this.refreshConnection();
     if (previous.doc !== this.owner.view.state.doc || !this.available()) this.drag.cancel();
     const rect = this.selectionRect();
-    const map = tables.tableGrid(this.owner.node);
+    const map = tableGrid(this.owner.node);
     const row = rect && map && rect.left === 0 && rect.right === map.width && rect.bottom - rect.top === 1;
     const column = rect && map && rect.top === 0 && rect.bottom === map.height && rect.right - rect.left === 1;
     // A 1x1 selection fits both axes. Keep the one the user chose, while
@@ -165,7 +176,8 @@ export class TableHandles {
     } else {
       this.selected = null;
     }
-    if (!this.selected || !this.available()) this.menu = null;
+    this.menu = this.selected && this.available() && this.heldAxes.has(this.selected.axis)
+      ? this.selected.axis : null;
     this.render();
     this.layout();
   }
@@ -205,12 +217,11 @@ export class TableHandles {
 
   available(): boolean {
     return !this.owner.view.isDestroyed && canRunCommand(this.owner.view.state, this.owner.view) &&
-      !!tables.tableGrid(this.owner.node);
+      !!tableGrid(this.owner.node);
   }
 
-  private get align(): Table.Align | null {
-    const column = this.selected?.axis === 'column' ? this.selected.index : this.column;
-    return this.owner.node.attrs.alignments[column] ?? null;
+  private columnAlign(index: number): KagamiMD.TableAlign {
+    return this.owner.node.attrs.alignments[index] ?? 'default';
   }
 
   render(): void {
@@ -249,7 +260,7 @@ export class TableHandles {
   selectionRect(): Rect | null {
     const selection = this.owner.view.state.selection;
     const pos = this.owner.getPos();
-    const map = tables.tableGrid(this.owner.node);
+    const map = tableGrid(this.owner.node);
     if (!(selection instanceof CellSelection) || pos === undefined || !map ||
         selection.$anchorCell.node(-1) !== this.owner.node || selection.$headCell.node(-1) !== this.owner.node)
       return null;
@@ -375,7 +386,7 @@ export class TableHandles {
   /** Select the axis, allowing the text being left to settle before a handle acts. */
   select(axis: TableHandles.Axis, index: number): boolean {
     const pos = this.owner.getPos();
-    const map = tables.tableGrid(this.owner.node);
+    const map = tableGrid(this.owner.node);
     if (!this.available() || pos === undefined || !map) return false;
     const count = axis === 'row' ? map.height : map.width;
     if (index < 0 || index >= count) return false;
@@ -383,6 +394,7 @@ export class TableHandles {
     const column = axis === 'column' ? index : 0;
     const $cell = this.owner.view.state.doc.resolve(pos + 1 + map.positionAt(row, column, this.owner.node));
     this.selected = { axis, index };
+    this.menu = this.heldAxes.has(axis) ? axis : null;
     const selection = axis === 'row' ? CellSelection.rowSelection($cell) : CellSelection.colSelection($cell);
     this.owner.view.dispatch(this.owner.view.state.tr.setSelection(selection));
     this.render();
@@ -393,46 +405,62 @@ export class TableHandles {
   chooseAction(axis: TableHandles.Axis, index: number): void {
     if (!this.select(axis, index)) return;
     const pos = this.owner.getPos();
-    if (pos === undefined) return;
-    const editor = findEditor(this.owner.view.dom);
-    if (!editor) return;
-    command.Command.dispatch(editor, Table.chooseAction, {
-      pos,
+    const editor = this.owner.editor;
+    if (pos === undefined || !editor || editor.isDestroyed()) return;
+    const alive = () => !this.destroyed && !this.owner.view.isDestroyed && !editor.isDestroyed();
+    const run = (command: PMCommand): boolean => {
+      if (!alive()) return false;
+      const current = this.owner.getPos();
+      return current !== undefined && editor.state.runCommand(onTableAxis(current, axis, index, command));
+    };
+    editor._onDidClickTableHandle.fire({
+      pos: pos as EditorLoc,
       rect: this.selectedHandle.dom.getBoundingClientRect(),
       axis,
       index,
-      align: this.align,
+      align: axis === 'column' ? this.columnAlign(index) : 'default',
+      hold: () => this.holds[axis].acquire(alive),
+      insertBefore: () => run(insertTableAxis(axis, 'before')),
+      insertAfter: () => run(insertTableAxis(axis, 'after')),
+      setColumnAlign: next => {
+        if (axis !== 'column' || !alive()) return false;
+        const current = this.owner.getPos();
+        return current !== undefined && editor.state.runCommand(alignTableColumns(next, current, index));
+      },
+      delete: () => run(axis === 'row' ? deleteTableRow : deleteTableColumn),
     });
   }
 
-  /** The menu remains open while the host holds the request. */
-  request(): command.CommandRequest {
-    return {
+  /** Keep the axis menu marked expanded while at least one host holds that axis. */
+  private controlHold(axis: TableHandles.Axis): ControlHold {
+    return new ControlHold({
+      element: () => this.selected?.axis === axis && !this.selectedHandle.dom.hidden ? this.selectedHandle.dom : null,
       pos: () => this.owner.getPos(),
-      rect: () => this.selectedHandle.dom.getBoundingClientRect(),
       held: on => {
-        if (this.owner.view.isDestroyed) return;
-        this.menu = on && this.selected ? this.selected.axis : null;
+        if (on) this.heldAxes.add(axis);
+        else this.heldAxes.delete(axis);
+        if (this.destroyed || this.owner.view.isDestroyed) return;
+        this.menu = this.selected && this.heldAxes.has(this.selected.axis) ? this.selected.axis : null;
         this.render();
         this.layout();
       },
-    };
+    });
   }
 
   add(axis: TableHandles.Axis): void {
-    const map = tables.tableGrid(this.owner.node);
+    const map = tableGrid(this.owner.node);
     if (!map) return;
     const count = axis === 'row' ? map.height : map.width;
     if (!this.select(axis, count - 1)) return;
     this.menu = null;
     this.render();
     this.owner.view.focus();
-    tables.insertTableAxis(axis, 'after')(this.owner.view.state, this.owner.view.dispatch, this.owner.view);
+    insertTableAxis(axis, 'after')(this.owner.view.state, this.owner.view.dispatch, this.owner.view);
   }
 
   handleKeyDown(event: KeyboardEvent): boolean {
     if (this.owner.view.isDestroyed) return false;
-    if (input.historyKey(this.owner.view, event)) return true;
+    if (routeHistoryKey(this.owner.view, event)) return true;
     if (event.altKey || !(event.metaKey || event.ctrlKey) || !this.selected) return false;
     switch (event.key.toLowerCase()) {
       case 'v':
@@ -490,7 +518,7 @@ export class TableHandles {
     event.stopPropagation();
     const from = Number(mount.dataset.index);
     if (!this.select(axis, from)) return;
-    const move = axis === 'row' ? tables.moveTableRow : tables.moveTableColumn;
+    const move = axis === 'row' ? moveTableRow : moveTableColumn;
     move(from, from + delta)(this.owner.view.state, this.owner.view.dispatch, this.owner.view);
     // Focus follows ownership from the hover handle to the selected handle,
     // even when a table edge prevents movement.
@@ -498,6 +526,7 @@ export class TableHandles {
   };
 
   destroy(): void {
+    this.destroyed = true;
     this.releaseConnection();
     this.controls.removeEventListener('pointerdown', this.drag.pointerDown, true);
     this.controls.removeEventListener('mousedown', this.drag.mouseDown, true);

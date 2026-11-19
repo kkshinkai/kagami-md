@@ -9,6 +9,7 @@
  * Derived from micromark, https://github.com/micromark/micromark. */
 
 import type {
+  Bindings,
   Create,
   FullNormalizedExtension,
   InitialConstruct,
@@ -23,8 +24,24 @@ import {content} from './initialize/content.js'
 import {document} from './initialize/document.js'
 import {flow} from './initialize/flow.js'
 import {string, text} from './initialize/text.js'
-import {commonmark as defaultConstructs} from '../constructs/commonmark.js'
 import {createTokenizer} from './create-tokenizer.js'
+
+const blank: FullNormalizedExtension = {
+  attentionMarkers: { null: [] },
+  contentInitial: {},
+  disable: { null: [] },
+  document: {},
+  flow: {},
+  flowInitial: {},
+  insideSpan: { null: [] },
+  string: {},
+  text: {}
+}
+
+const emptyBindings: Bindings = Object.freeze({
+  definitions: new Map<string, Bindings.Definition>(),
+  footnotes: new Set<string>()
+})
 
 /**
  * @param options
@@ -34,13 +51,16 @@ import {createTokenizer} from './create-tokenizer.js'
  */
 export function parse(options?: ParseOptions | null | undefined): ParseContext {
   const settings = options || {}
-  const constructs = combineExtensions([
-    defaultConstructs,
+  const constructs = settings.constructs ?? (combineExtensions([
+    blank,
     ...(settings.extensions || [])
-  ]) as FullNormalizedExtension
+  ]) as FullNormalizedExtension)
 
   const parser: ParseContext = {
     constructs,
+    cjkFriendly: settings.cjkFriendly ?? false,
+    target: settings.target ?? 'standard',
+    bindings: settings.bindings ?? emptyBindings,
     references: [],
     content: create(content),
     defined: [],

@@ -5,118 +5,121 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import * as Syntax from '../syntax/index.js';
+import {
+  ATXClosingSequenceSyntax, ATXHeadingSyntax, AutolinkSyntax, BackslashEscapeSyntax, BlockQuoteSyntax, BlockSyntax,
+  BulletListSyntax, CalloutDeclarationSyntax, CalloutSyntax, CharacterReferenceSyntax, ClauseSyntax,
+  CodeSpanSyntax, CollapsedReferenceLinkSyntax, DelimitedSyntax, DelimiterTokenSyntax,
+  EmojiShortcodeSyntax, FootnoteDefinitionSyntax, FootnoteReferenceSyntax, FrontMatterSyntax,
+  HardLineBreakSyntax, HeadingSyntax, HTMLCommentSyntax, HTMLLineBreakSyntax, HTMLImageSyntax,
+  HTMLTagBlockSyntax, ImageSyntax, IndentedCodeBlockSyntax, InlineClauseSyntax, InlineFieldClauseSyntax,
+  InlineLinkSyntax, InlineMathSyntax, LinkDestinationSyntax, LinkReferenceDefinitionSyntax, LinkLabelSyntax,
+  LinkSyntax, LinkTitleStartSyntax, LinkTitleSyntax, ListItemSyntax, LiteralAutolinkSyntax, LiteralBlockSyntax,
+  OrderedListSyntax, PendingATXHeadingMarkerSyntax, PendingBlockQuoteMarkerSyntax,
+  PendingCodeFenceSyntax, PendingFootnoteLabelSyntax, PendingHTMLBlockSyntax, PendingListMarkerSyntax,
+  PendingMathFenceSyntax, PendingSetextUnderlineSyntax, PendingTableSyntax, PendingThematicBreakSyntax,
+  RawFrontMatterSyntax, RawHTMLSyntax, SoftLineBreakSyntax, StringFieldClauseSyntax, TableRowSyntax, TableSyntax,
+  TagSyntax, TaskMarkerSyntax, TextBlockSyntax, ThematicBreakSyntax, TokenSyntax, TriviaTokenSyntax,
+  WikiEmbedSyntax, WikilinkSyntax, YAMLFrontMatterSyntax, YAMLMappingSyntax, YAMLNodeSyntax, YAMLScalarSyntax,
+  YAMLSequenceSyntax, type Frontier, type ReferenceLabels, type Syntax,
+} from '../syntax/index.js';
 import { Fragment, type Mark, type Node, type Schema } from 'prosemirror-model';
 import { editorSpelling, editorType } from './tree.js';
 
-/** Turn a document read for the editor into its ProseMirror document. */
-export function parse(syntax: Syntax.DocumentSyntax, text: string, schema: Schema): Node {
-  return new ParseContext(text, schema).document(syntax);
+/** Read blocks into a fragment, preserving their source spelling. */
+export function parseBlocks(syntax: readonly BlockSyntax[], text: string, schema: Schema): Fragment {
+  return Fragment.fromArray(new ParseContext(text, schema).blocks(syntax));
 }
 
-export namespace parse {
-  /** Read blocks into a fragment, preserving their source spelling. */
-  export function blocks(syntax: readonly Syntax.BlockSyntax[], text: string, schema: Schema): Fragment {
-    return Fragment.fromArray(new ParseContext(text, schema).blocks(syntax));
-  }
+/** Read one block, including its fields and the editor's required empty bodies. */
+export function parseBlock(syntax: BlockSyntax, text: string, schema: Schema, readings?: Map<Node, ReferenceLabels>): Node {
+  return new ParseContext(text, schema, readings).block(syntax);
+}
 
-  /** Read one block, including its fields and the editor's required empty bodies. */
-  export function block(syntax: Syntax.BlockSyntax, text: string, schema: Schema, readings?: Map<Node, Syntax.ReferenceLabels>): Node {
-    return new ParseContext(text, schema, readings).block(syntax);
-  }
+/** Turn a field's frontier into source text carrying occurrence marks. */
+export function parseContent(frontier: Frontier, text: string, schema: Schema): Fragment {
+  return new ParseContext(text, schema).content(frontier);
+}
 
-  /** Turn a field's frontier into source text carrying occurrence marks. */
-  export function content(frontier: Syntax.Frontier, text: string, schema: Schema): Fragment {
-    return new ParseContext(text, schema).content(frontier);
-  }
+/** Build a node whose children have already been converted. */
+export function parseNode(syntax: Syntax, content: Fragment | readonly Node[], schema: Schema): Node {
+  return new ParseContext('', schema).node(syntax, content);
+}
 
-  /** Build a node whose children have already been converted. */
-  export function node(syntax: Syntax.Syntax, content: Fragment | readonly Node[], schema: Schema): Node {
-    return new ParseContext('', schema).node(syntax, content);
-  }
-
-  /** Front matter holds decoded YAML or a literal field, never Markdown. */
-  export function frontMatter(syntax: Syntax.FrontMatterSyntax, schema: Schema): Node {
-    return new ParseContext('', schema).frontMatter(syntax);
-  }
+/** Front matter holds decoded YAML or a literal field, never Markdown. */
+export function parseFrontMatter(syntax: FrontMatterSyntax, schema: Schema): Node {
+  return new ParseContext('', schema).frontMatter(syntax);
 }
 
 /** The source and schema shared by a syntax-to-document walk. */
 class ParseContext {
   constructor(readonly text: string, readonly schema: Schema,
-    readonly readings?: Map<Node, Syntax.ReferenceLabels>) {}
+    readonly readings?: Map<Node, ReferenceLabels>) {}
 
-  document(syntax: Syntax.DocumentSyntax): Node {
-    const children = this.body(syntax.children);
-    if (syntax.frontMatter) children.unshift(this.frontMatter(syntax.frontMatter));
-    return this.node(syntax, children);
-  }
-
-  blocks(syntax: readonly Syntax.BlockSyntax[]): Node[] {
+  blocks(syntax: readonly BlockSyntax[]): Node[] {
     return syntax.map(block => this.block(block));
   }
 
-  body(syntax: readonly Syntax.BlockSyntax[]): Node[] {
+  body(syntax: readonly BlockSyntax[]): Node[] {
     return syntax.length ? this.blocks(syntax) : [this.schema.nodes.paragraph.createChecked()];
   }
 
-  node(syntax: Syntax.Syntax, content: Fragment | readonly Node[]): Node {
+  node(syntax: Syntax, content: Fragment | readonly Node[]): Node {
     const type = editorType(syntax, this.schema);
     if (!type) throw new RangeError(`No editor node for ${syntax.type}`);
     const attrs = attributes(syntax, type.spec.attrs);
     const spelling = editorSpelling(syntax);
     if (spelling !== undefined) attrs.spelling = spelling;
-    if (syntax instanceof Syntax.HeadingSyntax) {
-      attrs.form = syntax instanceof Syntax.ATXHeadingSyntax ? 'atx' : 'setext';
-    } else if (syntax instanceof Syntax.IndentedCodeBlockSyntax) {
+    if (syntax instanceof HeadingSyntax) {
+      attrs.form = syntax instanceof ATXHeadingSyntax ? 'atx' : 'setext';
+    } else if (syntax instanceof IndentedCodeBlockSyntax) {
       attrs.language = null;
       attrs.meta = null;
-    } else if (syntax instanceof Syntax.HTMLTagBlockSyntax) {
+    } else if (syntax instanceof HTMLTagBlockSyntax) {
       Object.assign(attrs, attributes(syntax.tag, type.spec.attrs), { tag: syntax.tag.type });
     }
     const node = type.createChecked(attrs, content);
-    if (syntax instanceof Syntax.TextBlockSyntax || syntax instanceof Syntax.InlineFieldClauseSyntax ||
-        syntax instanceof Syntax.StringFieldClauseSyntax) this.readings?.set(node, syntax.references);
+    if (syntax instanceof TextBlockSyntax || syntax instanceof InlineFieldClauseSyntax ||
+        syntax instanceof StringFieldClauseSyntax) this.readings?.set(node, syntax.references);
     return node;
   }
 
-  block(syntax: Syntax.BlockSyntax): Node {
-    if (syntax instanceof Syntax.TextBlockSyntax) return this.node(syntax, this.content(syntax.frontier));
-    if (syntax instanceof Syntax.LiteralBlockSyntax) return this.node(syntax, this.literal(syntax.content));
-    if (syntax instanceof Syntax.HTMLTagBlockSyntax) {
+  block(syntax: BlockSyntax): Node {
+    if (syntax instanceof TextBlockSyntax) return this.node(syntax, this.content(syntax.frontier));
+    if (syntax instanceof LiteralBlockSyntax) return this.node(syntax, this.literal(syntax.content));
+    if (syntax instanceof HTMLTagBlockSyntax) {
       const text = syntax.tag.frontier.map(piece =>
         piece.nodes.at(-1)?.type === 'lineEnding' ? '\n' : this.text.slice(piece.start, piece.end)
       ).join('');
       return this.node(syntax, this.literal(text));
     }
-    if (syntax instanceof Syntax.ThematicBreakSyntax) return this.node(syntax, []);
-    if (syntax instanceof Syntax.BlockQuoteSyntax || syntax instanceof Syntax.ListItemSyntax) {
+    if (syntax instanceof ThematicBreakSyntax) return this.node(syntax, []);
+    if (syntax instanceof BlockQuoteSyntax || syntax instanceof ListItemSyntax) {
       return this.node(syntax, this.body(syntax.children));
     }
-    if (syntax instanceof Syntax.BulletListSyntax || syntax instanceof Syntax.OrderedListSyntax) {
+    if (syntax instanceof BulletListSyntax || syntax instanceof OrderedListSyntax) {
       return this.node(syntax, this.blocks(syntax.children));
     }
-    if (syntax instanceof Syntax.CalloutSyntax) {
+    if (syntax instanceof CalloutSyntax) {
       return this.node(syntax,
         [this.node(syntax.title, this.content(syntax.title.frontier)), ...this.blocks(syntax.children)]);
     }
-    if (syntax instanceof Syntax.FootnoteDefinitionSyntax) {
+    if (syntax instanceof FootnoteDefinitionSyntax) {
       return this.node(syntax,
         [this.node(syntax.label, this.content(syntax.label.frontier)), ...this.body(syntax.children)]);
     }
-    if (syntax instanceof Syntax.LinkReferenceDefinitionSyntax) {
-      const fields: (Syntax.LinkLabelSyntax | Syntax.LinkDestinationSyntax
-        | Syntax.LinkTitleSyntax)[] = [syntax.labelField, syntax.destinationField];
+    if (syntax instanceof LinkReferenceDefinitionSyntax) {
+      const fields: (LinkLabelSyntax | LinkDestinationSyntax
+        | LinkTitleSyntax)[] = [syntax.labelField, syntax.destinationField];
       if (syntax.titleField) fields.push(syntax.titleField);
       return this.node(syntax, fields.map(field => this.node(field, this.content(field.frontier))));
     }
-    if (syntax instanceof Syntax.TableSyntax) {
+    if (syntax instanceof TableSyntax) {
       return this.node(syntax, [this.row(syntax.headerRow, true), ...syntax.children.map(row => this.row(row, false))]);
     }
     throw new RangeError(`No editor conversion for ${syntax.type}`);
   }
 
-  row(syntax: Syntax.TableRowSyntax, header: boolean): Node {
+  row(syntax: TableRowSyntax, header: boolean): Node {
     const type = header ? this.schema.nodes.tableHeader : this.schema.nodes.tableCell;
     return this.node(syntax, syntax.children.map(cell => {
       const paragraph = this.schema.nodes.tableParagraph.createChecked(null, this.content(cell.frontier));
@@ -129,32 +132,32 @@ class ParseContext {
     return text ? [this.schema.text(text)] : [];
   }
 
-  frontMatter(syntax: Syntax.FrontMatterSyntax): Node {
-    if (syntax instanceof Syntax.RawFrontMatterSyntax) return this.node(syntax, this.literal(syntax.content));
-    if (syntax instanceof Syntax.YAMLFrontMatterSyntax) return this.node(syntax, [this.yaml(syntax.root)]);
+  frontMatter(syntax: FrontMatterSyntax): Node {
+    if (syntax instanceof RawFrontMatterSyntax) return this.node(syntax, this.literal(syntax.content));
+    if (syntax instanceof YAMLFrontMatterSyntax) return this.node(syntax, [this.yaml(syntax.root)]);
     throw new RangeError(`No front matter conversion for ${syntax.type}`);
   }
 
-  yaml(syntax: Syntax.YAMLNodeSyntax): Node {
-    if (syntax instanceof Syntax.YAMLScalarSyntax) return this.node(syntax, this.literal(syntax.content));
-    if (syntax instanceof Syntax.YAMLSequenceSyntax)
+  yaml(syntax: YAMLNodeSyntax): Node {
+    if (syntax instanceof YAMLScalarSyntax) return this.node(syntax, this.literal(syntax.content));
+    if (syntax instanceof YAMLSequenceSyntax)
       return this.node(syntax, syntax.children.map(child => this.yaml(child)));
-    if (syntax instanceof Syntax.YAMLMappingSyntax) {
+    if (syntax instanceof YAMLMappingSyntax) {
       return this.node(syntax,
         syntax.children.map(pair => this.node(pair, [this.yaml(pair.key), this.yaml(pair.value)])));
     }
     throw new RangeError(`No YAML conversion for ${syntax.type}`);
   }
 
-  content(frontier: Syntax.Frontier): Fragment {
-    const occurrences = new Map<Syntax.Syntax, Mark>();
+  content(frontier: Frontier): Fragment {
+    const occurrences = new Map<Syntax, Mark>();
     const content: Node[] = [];
     let offset = 0;
     for (const piece of frontier) {
       const marks: Mark[] = [];
       for (const syntax of piece.nodes) {
-        if (syntax instanceof Syntax.TokenSyntax || syntax instanceof Syntax.ClauseSyntax ||
-          syntax instanceof Syntax.InlineClauseSyntax) continue;
+        if (syntax instanceof TokenSyntax || syntax instanceof ClauseSyntax ||
+          syntax instanceof InlineClauseSyntax) continue;
         let mark = occurrences.get(syntax);
         if (!mark) {
           const type = this.schema.marks[syntax.type];
@@ -167,7 +170,7 @@ class ParseContext {
       if (piece.nodes.some((node, index) => metaChild(node, piece.nodes[index + 1])))
         marks.push(this.schema.marks.meta.create());
       const tail = piece.nodes.at(-1);
-      if (tail?.type === 'lineEnding' || tail instanceof Syntax.SoftLineBreakSyntax) {
+      if (tail?.type === 'lineEnding' || tail instanceof SoftLineBreakSyntax) {
         content.push(this.schema.nodes.lineEnding.createChecked(null, null, marks));
         offset++;
       } else if (piece.end > piece.start) {
@@ -191,50 +194,50 @@ function attributes(value: object, declared: object | undefined): Record<string,
 }
 
 /** Classify each edge on the ancestor path by its grammatical slot. */
-function metaChild(node: Syntax.Syntax, next: Syntax.Syntax | undefined): boolean {
-  if (node instanceof Syntax.TriviaTokenSyntax) {
+function metaChild(node: Syntax, next: Syntax | undefined): boolean {
+  if (node instanceof TriviaTokenSyntax) {
     return node.type === 'codeSpanPadding' || node.type === 'inlineMathPadding' ||
       node.type === 'resourceWhitespace' || node.type === 'tablePipeEscape';
   }
-  if (node instanceof Syntax.RawHTMLSyntax || node instanceof Syntax.HTMLCommentSyntax ||
-      node instanceof Syntax.HTMLLineBreakSyntax || node instanceof Syntax.HTMLImageSyntax) return false;
-  if (node instanceof Syntax.TokenSyntax || node instanceof Syntax.SoftLineBreakSyntax ||
-      node instanceof Syntax.LiteralAutolinkSyntax || node instanceof Syntax.PendingThematicBreakSyntax ||
-      node instanceof Syntax.PendingSetextUnderlineSyntax) return node.tag !== 'Text';
-  if (node instanceof Syntax.ClauseSyntax || node instanceof Syntax.InlineClauseSyntax) return false;
-  if (node instanceof Syntax.BackslashEscapeSyntax) return next === node.backslash;
-  if (node instanceof Syntax.AutolinkSyntax) return next !== node.address;
-  if (node instanceof Syntax.TagSyntax) return next !== node.name;
-  if (node instanceof Syntax.DelimitedSyntax) return next === node.openingDelimiter || next === node.closingDelimiter;
-  if (node instanceof Syntax.CodeSpanSyntax) return next === node.openingBackticks || next === node.closingBackticks;
-  if (node instanceof Syntax.InlineMathSyntax) return next === node.openingDollars || next === node.closingDollars;
-  if (node instanceof Syntax.LinkSyntax) {
-    if (next === node.openingBracket || next === node.closingBracket || next instanceof Syntax.InlineClauseSyntax)
+  if (node instanceof RawHTMLSyntax || node instanceof HTMLCommentSyntax ||
+      node instanceof HTMLLineBreakSyntax || node instanceof HTMLImageSyntax) return false;
+  if (node instanceof TokenSyntax || node instanceof SoftLineBreakSyntax ||
+      node instanceof LiteralAutolinkSyntax || node instanceof PendingThematicBreakSyntax ||
+      node instanceof PendingSetextUnderlineSyntax) return node.tag !== 'Text';
+  if (node instanceof ClauseSyntax || node instanceof InlineClauseSyntax) return false;
+  if (node instanceof BackslashEscapeSyntax) return next === node.backslash;
+  if (node instanceof AutolinkSyntax) return next !== node.address;
+  if (node instanceof TagSyntax) return next !== node.name;
+  if (node instanceof DelimitedSyntax) return next === node.openingDelimiter || next === node.closingDelimiter;
+  if (node instanceof CodeSpanSyntax) return next === node.openingBackticks || next === node.closingBackticks;
+  if (node instanceof InlineMathSyntax) return next === node.openingDollars || next === node.closingDollars;
+  if (node instanceof LinkSyntax) {
+    if (next === node.openingBracket || next === node.closingBracket || next instanceof InlineClauseSyntax)
       return true;
-    if (node instanceof Syntax.InlineLinkSyntax)
+    if (node instanceof InlineLinkSyntax)
       return next === node.openingParenthesis || next === node.closingParenthesis;
-    if (node instanceof Syntax.CollapsedReferenceLinkSyntax)
+    if (node instanceof CollapsedReferenceLinkSyntax)
       return next === node.referenceOpeningBracket || next === node.referenceClosingBracket;
     return false;
   }
-  if (node instanceof Syntax.FootnoteReferenceSyntax)
+  if (node instanceof FootnoteReferenceSyntax)
     return next === node.openingBracket || next === node.caret || next === node.closingBracket;
-  if (node instanceof Syntax.HardLineBreakSyntax) return next === node.marker;
-  if (node instanceof Syntax.WikilinkSyntax || node instanceof Syntax.WikiEmbedSyntax)
+  if (node instanceof HardLineBreakSyntax) return next === node.marker;
+  if (node instanceof WikilinkSyntax || node instanceof WikiEmbedSyntax)
     return next !== (node.alias ?? node.target);
-  if (node instanceof Syntax.PendingCodeFenceSyntax || node instanceof Syntax.PendingMathFenceSyntax) return true;
-  if (node instanceof Syntax.PendingListMarkerSyntax || node instanceof Syntax.PendingATXHeadingMarkerSyntax)
+  if (node instanceof PendingCodeFenceSyntax || node instanceof PendingMathFenceSyntax) return true;
+  if (node instanceof PendingListMarkerSyntax || node instanceof PendingATXHeadingMarkerSyntax)
     return next === node.marker;
-  if (node instanceof Syntax.PendingBlockQuoteMarkerSyntax)
-    return next instanceof Syntax.DelimiterTokenSyntax && next.type === 'blockQuoteMarker';
-  if (node instanceof Syntax.PendingFootnoteLabelSyntax) return next !== node.label;
-  if (node instanceof Syntax.PendingTableSyntax)
+  if (node instanceof PendingBlockQuoteMarkerSyntax)
+    return next instanceof DelimiterTokenSyntax && next.type === 'blockQuoteMarker';
+  if (node instanceof PendingFootnoteLabelSyntax) return next !== node.label;
+  if (node instanceof PendingTableSyntax)
     return next === node.delimiterRow ||
-      next instanceof Syntax.DelimiterTokenSyntax && next.type === 'tableCellDivider';
-  if (node instanceof Syntax.PendingHTMLBlockSyntax) return false;
-  if (node instanceof Syntax.CharacterReferenceSyntax || node instanceof Syntax.EmojiShortcodeSyntax ||
-      node instanceof Syntax.ImageSyntax || node instanceof Syntax.TaskMarkerSyntax ||
-      node instanceof Syntax.CalloutDeclarationSyntax || node instanceof Syntax.ATXClosingSequenceSyntax ||
-    node instanceof Syntax.LinkTitleStartSyntax) return true;
+      next instanceof DelimiterTokenSyntax && next.type === 'tableCellDivider';
+  if (node instanceof PendingHTMLBlockSyntax) return false;
+  if (node instanceof CharacterReferenceSyntax || node instanceof EmojiShortcodeSyntax ||
+      node instanceof ImageSyntax || node instanceof TaskMarkerSyntax ||
+      node instanceof CalloutDeclarationSyntax || node instanceof ATXClosingSequenceSyntax ||
+    node instanceof LinkTitleStartSyntax) return true;
   throw new RangeError(`Unclassified frontier node: ${node.type}`);
 }

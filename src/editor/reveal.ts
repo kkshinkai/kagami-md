@@ -16,7 +16,7 @@ import { keepsFormattedSourceRendered } from '../schema/format.js';
 import { focusKey } from '../state/input.js';
 import { normalizationKey, revealing, type Extent, type Revealing } from '../state/normalization.js';
 import { schema } from '../types/schema.js';
-import { decorateBlocks } from './decoration.js';
+import { decorateBlocks, updateBlockDecorations } from './decoration.js';
 
 /** A meta character: one that belongs to how something is written, not to what it says. */
 export const META = 'md-meta';
@@ -50,70 +50,68 @@ const revealKey = new PluginKey<SourcePresentation>('inline-presentation');
 export function reveal(): Plugin<SourcePresentation> {
   return new Plugin({
     key: revealKey,
-    state: reveal.state(drawSource),
+    state: revealState(drawSource),
     props: {
       decorations(state) { return revealKey.getState(state)?.decorations ?? null; },
     },
   });
 }
 
-export namespace reveal {
-  /** One block's painting, sharing the selection reading made for this pass. */
-  export type Draw = (
-    node: Node,
-    position: number,
-    state: EditorState,
-    editing: TextSelection | null,
-    visible: Revealing,
-  ) => readonly Decoration[];
+/** One block's painting, sharing the selection reading made for this pass. */
+export type RevealDraw = (
+  node: Node,
+  position: number,
+  state: EditorState,
+  editing: TextSelection | null,
+  visible: Revealing,
+) => readonly Decoration[];
 
-  export type Refresh = (
-    before: decorateBlocks.Range | null,
-    after: decorateBlocks.Range | null,
-  ) => readonly decorateBlocks.Range[];
+export type RevealRefresh = (
+  before: decorateBlocks.Range | null,
+  after: decorateBlocks.Range | null,
+) => readonly decorateBlocks.Range[];
 
-  /** All source presentations share the pointer controller's gesture identity. Rendered
-   * content follows document edits while these visibility decorations retain their origin. */
-  export function state(draw: Draw, refresh: Refresh = endpoints): StateField<SourcePresentation> {
-    return {
-      init(_config, state) {
-        const selection = sourceEditingSelection(state);
-        const visible = revealing(selection);
-        const current = decorateBlocks(state.doc, (node, position) => draw(node, position, state, selection, visible));
-        return { current, decorations: current, selection, gesture: null, previous: null };
-      },
-      apply(transaction, value, before, state) {
-        const selection = sourceEditingSelection(state);
-        const visible = revealing(selection);
-        const current = decorateBlocks.update(
-          value.current,
-          transaction,
-          (node, position) => draw(node, position, state, selection, visible),
-          refreshRanges(before, state, selection, transaction, refresh),
-        );
-        let gesture = value.gesture?.map(transaction) ?? null;
-        let previous = value.previous?.map(transaction) ?? null;
-        const pointer = normalizationKey.getState(state);
-        if (!pointer?.isPointerActive && !pointer?.isPointerSelecting) {
-          return { current, decorations: current, selection, gesture, previous };
-        }
-        const mapped = value.decorations.map(transaction.mapping, transaction.doc);
-        const mappedSelection = mapRange(value.selection, transaction);
-        if (pointer.presentationId && gesture?.id !== pointer.presentationId) {
-          const restored = previous?.id === pointer.presentationId ? previous : null;
-          previous = gesture;
-          gesture = restored ?? new Gesture(pointer.presentationId, mapped, mappedSelection);
-        }
-        return {
-          current,
-          gesture,
-          previous,
-          decorations: gesture ? gesture.origin : mapped,
-          selection: gesture ? gesture.selection : mappedSelection,
-        };
-      },
-    };
-  }
+/** All source presentations share the pointer controller's gesture identity. Rendered
+ * content follows document edits while these visibility decorations retain their origin. */
+export function revealState(draw: RevealDraw, refresh: RevealRefresh = endpoints): StateField<SourcePresentation> {
+  return {
+    init(_config, state) {
+      const selection = sourceEditingSelection(state);
+      const visible = revealing(selection);
+      const current = decorateBlocks(state.doc, (node, position) => draw(node, position, state, selection, visible));
+      return { current, decorations: current, selection, gesture: null, previous: null };
+    },
+    apply(transaction, value, before, state) {
+      const selection = sourceEditingSelection(state);
+      const visible = revealing(selection);
+      const current = updateBlockDecorations(
+        value.current,
+        transaction,
+        (node, position) => draw(node, position, state, selection, visible),
+        refreshRanges(before, state, selection, transaction, refresh),
+      );
+      let gesture = value.gesture?.map(transaction) ?? null;
+      let previous = value.previous?.map(transaction) ?? null;
+      const pointer = normalizationKey.getState(state);
+      if (!pointer?.isPointerActive && !pointer?.isPointerSelecting) {
+        return { current, decorations: current, selection, gesture, previous };
+      }
+      const mapped = value.decorations.map(transaction.mapping, transaction.doc);
+      const mappedSelection = mapRange(value.selection, transaction);
+      if (pointer.presentationId && gesture?.id !== pointer.presentationId) {
+        const restored = previous?.id === pointer.presentationId ? previous : null;
+        previous = gesture;
+        gesture = restored ?? new Gesture(pointer.presentationId, mapped, mappedSelection);
+      }
+      return {
+        current,
+        gesture,
+        previous,
+        decorations: gesture ? gesture.origin : mapped,
+        selection: gesture ? gesture.selection : mappedSelection,
+      };
+    },
+  };
 }
 
 class Gesture {
@@ -139,7 +137,7 @@ function refreshRanges(
   state: EditorState,
   selection: TextSelection | null,
   transaction: Transaction,
-  refresh: reveal.Refresh,
+  refresh: RevealRefresh,
 ): readonly decorateBlocks.Range[] {
   const old = sourceEditingSelection(before);
   const same = old === selection || old !== null && selection !== null && old.eq(selection);

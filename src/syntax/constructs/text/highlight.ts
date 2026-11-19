@@ -9,10 +9,9 @@
  * Derived from micromark-extension-gfm-strikethrough, https://github.com/micromark/micromark-extension-gfm-strikethrough. */
 
 /**
- * Highlight, `==a==`. Kagami's own, written on the model of GFM's strikethrough: a sequence
- * is exactly two `=`, it opens when no whitespace follows it and closes when no whitespace
- * precedes it, so CJK and intraword content are admitted; the resolver pairs sequences in the
- * same inline scope. A longer run of `=` stays text.
+ * Highlight, `==a==`. Exactly two equals signs form a delimiter run.
+ * It opens and closes at the same boundaries as GFM strikethrough in each
+ * parser mode. The resolver pairs runs within the same inline scope.
  */
 import type {
   Code,
@@ -26,9 +25,12 @@ import type {
 } from '../../types/index.js';
 import { assert } from '../../kernel/assert.js';
 import { splice } from '../../kernel/utils/chunked/index.js';
-import { markdownLineEndingOrSpace, unicodeWhitespace } from '../../kernel/utils/character/index.js';
+import {
+  attentionSides, classifyBeforeAttention, classifyAttentionCharacter, nextCodePoint,
+} from '../../kernel/utils/cjk/index.js';
+import { classifyCharacter } from '../../kernel/utils/classify-character/index.js';
 import { resolveAll } from '../../kernel/utils/resolve-all/index.js';
-import { codes, types } from '../../kernel/utils/symbol/index.js';
+import { codes, constants, types } from '../../kernel/utils/symbol/index.js';
 
 const highlight: Construct = {
   name: 'highlight',
@@ -136,6 +138,8 @@ function resolveAllHighlight(events: Array<Event>, context: TokenizeContext): Ar
 
 function tokenizeHighlight(this: TokenizeContext, effects: Effects, ok: State, nok: State): State {
   const previous = this.previous;
+  const before = classifyBeforeAttention(this);
+  const context = this;
   const events = this.events;
   let size = 0;
 
@@ -182,26 +186,20 @@ function tokenizeHighlight(this: TokenizeContext, effects: Effects, ok: State, n
 
     if (size < 2) return nok(code);
     const token = effects.exit('highlightSequenceTemporary');
-    token._open = !whitespace(code);
-    token._close = !whitespace(previous);
+    if (!context.parser.cjkFriendly) {
+      const before = classifyCharacter(previous);
+      const after = classifyCharacter(code);
+      token._open =
+        !after || (after === constants.attentionSideAfter && Boolean(before));
+      token._close =
+        !before || (before === constants.attentionSideAfter && Boolean(after));
+      return ok(code);
+    }
+    const sides = attentionSides(before, classifyAttentionCharacter(nextCodePoint(context, code)));
+    token._open = sides.open;
+    token._close = sides.close;
     return ok(code);
   }
-}
-
-/**
- * Whether a code is whitespace, or the edge of the text.
- *
- * @param code
- *   Code.
- * @returns
- *   Whether it is.
- */
-function whitespace(code: Code): boolean {
-  return (
-    code === codes.eof ||
-    markdownLineEndingOrSpace(code) ||
-    (code <= 0xff_ff && unicodeWhitespace(code))
-  );
 }
 
 declare module '../../types/index.js' {

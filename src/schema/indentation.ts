@@ -36,7 +36,7 @@ interface ReadFrame {
 
 /** One occurrence of a line; an item's first block writes its head. */
 interface Line extends ReadFrame {
-  readonly kind: Line.Kind;
+  readonly kind: LineKind;
   readonly node: Node;
   readonly pos: number;
   readonly head: Node | null;
@@ -46,9 +46,7 @@ interface Line extends ReadFrame {
   readonly index: number;
 }
 
-namespace Line {
-  export type Kind = 'block' | 'item' | 'carrier' | 'quote' | 'callout' | 'footnote';
-}
+type LineKind = 'block' | 'item' | 'carrier' | 'quote' | 'callout' | 'footnote';
 
 interface Nested {
   readonly line: Line;
@@ -58,7 +56,7 @@ interface Nested {
   readonly children: Nested[];
 }
 
-/** Read a selection window, ask for new levels, and write the resulting nesting. @internal */
+/** Read a selection window, ask for new levels, and write the resulting nesting. */
 export function indentLines(state: EditorState, change: 1 | -1): Transaction | null {
   const selected = selectedLines(state);
   if (!selected || !selected.size) return null;

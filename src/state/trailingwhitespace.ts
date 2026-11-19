@@ -8,8 +8,8 @@
 import type { Node, ResolvedPos } from 'prosemirror-model';
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
 import { fieldSource } from '../parse/field.js';
-import { type correction } from './correction.js';
-import { history } from './history.js';
+import { type CorrectionFields } from './correction.js';
+import { restoringHistory } from './history.js';
 import { focusKey, type FocusState } from './input.js';
 import { normalizationKey } from './normalization.js';
 
@@ -32,44 +32,42 @@ export function trailingWhitespace(): Plugin<PendingWhitespace> {
   });
 }
 
-export namespace trailingWhitespace {
-  /** Settle edited and departed fields in the correction's transaction. */
-  export function correct(tr: Transaction, fields: correction.Fields, state: EditorState): boolean {
-    const pointer = normalizationKey.getState(state);
-    if (pointer?.isPointerActive || pointer?.isPointerSelecting) return false;
-    const pending = key.getState(state)!;
-    const active = tr.selection instanceof TextSelection && tr.selection.$head.depth
-      ? tr.selection.$head.before() : null;
-    const positions = new Set(fields.textblocks(tr));
-    for (const position of pending.positions) positions.add(tr.mapping.map(position, 1));
-    for (const position of [...positions].sort((a, b) => b - a)) {
-      const node = tr.doc.nodeAt(position);
-      if (!node || !pending.blurred && position === active) continue;
-      const length = terminalWhitespace(node);
-      if (!length) continue;
-      fields.include(position, tr);
-      const end = position + 1 + node.content.size;
-      tr.insertText('', end - length, end);
-    }
-    const settled = !!(pending.positions.length || pending.blurred);
-    if (settled) tr.setMeta(key, true);
-    return settled;
+/** Settle edited and departed fields in the correction's transaction. */
+export function correctTrailingWhitespace(tr: Transaction, fields: CorrectionFields, state: EditorState): boolean {
+  const pointer = normalizationKey.getState(state);
+  if (pointer?.isPointerActive || pointer?.isPointerSelecting) return false;
+  const pending = key.getState(state)!;
+  const active = tr.selection instanceof TextSelection && tr.selection.$head.depth
+    ? tr.selection.$head.before() : null;
+  const positions = new Set(fields.textblocks(tr));
+  for (const position of pending.positions) positions.add(tr.mapping.map(position, 1));
+  for (const position of [...positions].sort((a, b) => b - a)) {
+    const node = tr.doc.nodeAt(position);
+    if (!node || !pending.blurred && position === active) continue;
+    const length = terminalWhitespace(node);
+    if (!length) continue;
+    fields.include(position, tr);
+    const end = position + 1 + node.content.size;
+    tr.insertText('', end - length, end);
   }
+  const settled = !!(pending.positions.length || pending.blurred);
+  if (settled) tr.setMeta(key, true);
+  return settled;
+}
 
-  /** Whether detaching an unfocused surface still has an active text to settle. */
-  export function pending(position: ResolvedPos): boolean {
-    return terminalWhitespace(position.parent) > 0;
-  }
+/** Whether detaching an unfocused surface still has an active text to settle. */
+export function pendingTrailingWhitespace(position: ResolvedPos): boolean {
+  return terminalWhitespace(position.parent) > 0;
 }
 
 /** Keep only edited or departed texts; untouched file units are never scanned. */
 function track(tr: Transaction, pending: PendingWhitespace, before: EditorState,
   state: EditorState): PendingWhitespace {
-  if (history.restoring([tr])) return { positions: [], blurred: false };
+  if (restoringHistory([tr])) return { positions: [], blurred: false };
   const focus = tr.getMeta(focusKey) as Partial<FocusState> | undefined;
   const previous = new Set(pending.positions);
   const head = before.selection.$head;
-  if (head.depth && (tr.selectionSet || focus?.blurPending) && trailingWhitespace.pending(head))
+  if (head.depth && (tr.selectionSet || focus?.blurPending) && pendingTrailingWhitespace(head))
     previous.add(head.before());
   const positions = new Set<number>();
   for (const position of previous) {

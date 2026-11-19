@@ -7,19 +7,20 @@
 
 import {
   CollapsedReferenceImageSyntax, HTMLImageSyntax, HTMLTagBlockSyntax, ImageSyntax,
-  ShortcutReferenceImageSyntax, WikiEmbedSyntax, parseBlocks,
+  ShortcutReferenceImageSyntax, WikiEmbedSyntax,
 } from '../syntax/index.js';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import type { Attrs, MarkType, Node } from 'prosemirror-model';
 import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view';
-import type { Command } from '../command/command.js';
-import { findEditor } from '../editor/dom.js';
-import { decorateBlocks } from '../editor/decoration.js';
+import type { KagamiMD } from '../editor/editor.js';
+import { decorateBlocks, updateBlockDecorations } from '../editor/decoration.js';
 import { observeLayout, type LayoutSubscription } from '../editor/layout.js';
+import { PluginDesc } from '../editor/plugin.js';
 import { registerRenderedSource } from '../editor/renderedsource.js';
 import { standIn } from '../editor/reveal.js';
-import { bindings } from '../state/bindings.js';
+import { BindingState } from '../state/bindings.js';
+import { getParser } from '../state/parser.js';
 import { fieldSource, readField } from '../parse/field.js';
 import { walkInline } from '../parse/inline.js';
 import { compositionState } from '../state/input.js';
@@ -29,137 +30,134 @@ const presentationKey = new PluginKey<DecorationSet>('image-widgets');
 let nextId = 0;
 
 /** Present Markdown and HTML images while their source remains native document text. */
-export function image(): Plugin[] {
-  return [image.presentation()];
+export function image(): PluginDesc[] {
+  return [PluginDesc.viewState(imagePresentation)];
 }
 
-export namespace image {
-  export interface Occurrence {
-    from: number;
-    to: number;
-    src: string;
-    title: string;
-    alt?: string;
-    width?: number | null;
-    height?: number | null;
-  }
+export interface ImageOccurrence {
+  from: number;
+  to: number;
+  src: string;
+  title: string;
+  alt?: string;
+  width?: number | null;
+  height?: number | null;
+}
 
-  /** Read Markdown image occurrences from the parser's marks, including nested images. */
-  export function read(textblock: Node, start: number): Occurrence[] {
-    const marks = textblock.type.schema.marks;
-    return readMarkedImages(textblock, start, [marks.inlineImage, marks.fullReferenceImage,
-      marks.collapsedReferenceImage, marks.shortcutReferenceImage]);
-  }
+/** Read Markdown image occurrences from the parser's marks, including nested images. */
+export function readImages(textblock: Node, start: number): ImageOccurrence[] {
+  const marks = textblock.type.schema.marks;
+  return readMarkedImages(textblock, start, [marks.inlineImage, marks.fullReferenceImage,
+    marks.collapsedReferenceImage, marks.shortcutReferenceImage]);
+}
 
-  /** The parser-owned HTML images shared by widgets and source concealment. */
-  export function html(textblock: Node, start: number): Occurrence[] {
-    const { nodes, marks } = textblock.type.schema;
-    const result = readMarkedImages(textblock, start, [marks.htmlImage]);
-    if (textblock.type === nodes.htmlTagBlock && textblock.attrs.tag === 'htmlImage' && textblock.attrs.destination) {
-      result.push(readOccurrence(textblock.attrs, start, start + textblock.content.size));
-    }
-    return result;
+/** The parser-owned HTML images shared by widgets and source concealment. */
+export function htmlImages(textblock: Node, start: number): ImageOccurrence[] {
+  const { nodes, marks } = textblock.type.schema;
+  const result = readMarkedImages(textblock, start, [marks.htmlImage]);
+  if (textblock.type === nodes.htmlTagBlock && textblock.attrs.tag === 'htmlImage' && textblock.attrs.destination) {
+    result.push(readOccurrence(textblock.attrs, start, start + textblock.content.size));
   }
+  return result;
+}
 
-  /** Create the image element used by both document and drag-preview decorations. */
-  export function widget(document: Document, occurrence: Occurrence): HTMLImageElement {
-    const element = document.createElement('img');
-    element.className = 'md-image-object';
-    element.src = occurrence.src;
-    element.alt = '';
-    element.referrerPolicy = 'no-referrer';
-    element.contentEditable = 'false';
-    element.spellcheck = false;
-    element.dataset.imageWidget = 'true';
-    if (occurrence.title) element.title = occurrence.title;
-    element.addEventListener('error', () => element.classList.add('md-image-broken'));
-    element.addEventListener('load', () => element.classList.remove('md-image-broken'));
-    return element;
+/** Create the image element used by both document and drag-preview decorations. */
+export function imageWidget(document: Document, occurrence: ImageOccurrence): HTMLImageElement {
+  const element = document.createElement('img');
+  element.className = 'md-image-object';
+  element.src = occurrence.src;
+  element.alt = '';
+  element.referrerPolicy = 'no-referrer';
+  element.contentEditable = 'false';
+  element.spellcheck = false;
+  element.dataset.imageWidget = 'true';
+  if (occurrence.title) element.title = occurrence.title;
+  element.addEventListener('error', () => element.classList.add('md-image-broken'));
+  element.addEventListener('load', () => element.classList.remove('md-image-broken'));
+  return element;
+}
+
+/** A height-only image uses its intrinsic ratio so max-width can shrink both axes. */
+function applyImageSize(dom: HTMLImageElement, width?: number | null, height?: number | null): void {
+  if (!width && height && dom.naturalWidth > 0 && dom.naturalHeight > 0) {
+    width = height * dom.naturalWidth / dom.naturalHeight;
+    height = undefined;
   }
+  const cssWidth = width ? `${width}px` : '';
+  const cssHeight = height ? `${height}px` : '';
+  const fit = height ? 'contain' : '';
+  if (dom.style.width !== cssWidth) dom.style.width = cssWidth;
+  if (dom.style.height !== cssHeight) dom.style.height = cssHeight;
+  if (dom.style.objectFit !== fit) dom.style.objectFit = fit;
+}
 
-  /** A height-only image uses its intrinsic ratio so max-width can shrink both axes. */
-  export function applySize(dom: HTMLImageElement, width?: number | null, height?: number | null): void {
-    if (!width && height && dom.naturalWidth > 0 && dom.naturalHeight > 0) {
-      width = height * dom.naturalWidth / dom.naturalHeight;
-      height = undefined;
-    }
-    const cssWidth = width ? `${width}px` : '';
-    const cssHeight = height ? `${height}px` : '';
-    const fit = height ? 'contain' : '';
-    if (dom.style.width !== cssWidth) dom.style.width = cssWidth;
-    if (dom.style.height !== cssHeight) dom.style.height = cssHeight;
-    if (dom.style.objectFit !== fit) dom.style.objectFit = fit;
-  }
+/** Edit this occurrence's dimensions, preserving its other authored source. */
+export function resizeImage(state: EditorState, from: number, to: number, width: number,
+  height: number): Transaction | null {
+  if (from < 0 || to > state.doc.content.size || from >= to ||
+      ![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 0xffffffff)) return null;
+  return new ImageEdit(state, from, to, width, height).apply();
+}
 
-  /** Edit this occurrence's dimensions, preserving its other authored source. */
-  export function resize(state: EditorState, from: number, to: number, width: number,
-    height: number): Transaction | null {
-    if (from < 0 || to > state.doc.content.size || from >= to ||
-        ![width, height].every(value => Number.isInteger(value) && value > 0 && value <= 0xffffffff)) return null;
-    return new ImageEdit(state, from, to, width, height).apply();
-  }
-
-  /** Image widgets and their gesture/resize lifetime belong to this plugin. */
-  export function presentation(): Plugin<DecorationSet> {
-    // Widgets are drawn before the plugin's view exists, so the attached view's presentation is made
-    // on first use. A State creates its own plugins and is attached to one editor (State.attachView).
-    let images: ImagePresentation | null = null;
-    const attach = (view: EditorView) => images?.view === view ? images : images = new ImagePresentation(view);
-    const drawWith = (node: Node, position: number, previous: DecorationSet) => draw(node, position, previous, attach);
-    return new Plugin({
-      key: presentationKey,
-      state: {
-        init(_config, state) { return decorateBlocks(state.doc, drawWith); },
-        apply(tr, previous) { return decorateBlocks.update(previous, tr, drawWith); },
+/** Image widgets and their gesture/resize lifetime belong to this plugin. */
+export function imagePresentation(editor?: KagamiMD): Plugin<DecorationSet> {
+  // Widgets are drawn before the plugin's view exists, so the attached view's presentation is made
+  // on first use. A mounted view creates its own view-state plugins.
+  let images: ImagePresentation | null = null;
+  const attach = (view: EditorView) =>
+    images?.view === view ? images : images = new ImagePresentation(view, editor);
+  const drawWith = (node: Node, position: number, previous: DecorationSet) =>
+    draw(node, position, previous, attach, (id, occurrence) => images?.noteOccurrence(id, occurrence));
+  return new Plugin({
+    key: presentationKey,
+    state: {
+      init(_config, state) { return decorateBlocks(state.doc, drawWith); },
+      apply(tr, previous) { return updateBlockDecorations(previous, tr, drawWith); },
+    },
+    props: {
+      decorations: state => presentationKey.getState(state) ?? null,
+      handleDOMEvents: {
+        click: (view, event) => attach(view).click(event),
+        contextmenu: (view, event) => attach(view).contextmenu(event),
+        dragstart: (view, event) => attach(view).dragstart(event),
       },
-      props: {
-        decorations: state => presentationKey.getState(state) ?? null,
-        handleDOMEvents: {
-          click: (view, event) => attach(view).click(event),
-          contextmenu: (view, event) => attach(view).contextmenu(event),
-          dragstart: (view, event) => attach(view).dragstart(event),
+    },
+    view(view) {
+      const presentation = attach(view);
+      presentation.connect();
+      return {
+        update: (view, previous) => presentation.update(view, previous),
+        destroy() {
+          presentation.destroy();
+          if (images === presentation) images = null;
         },
-      },
-      view(view) {
-        const presentation = attach(view);
-        presentation.connect();
-        return {
-          update: (view, previous) => presentation.update(view, previous),
-          destroy() {
-            presentation.destroy();
-            if (images === presentation) images = null;
-          },
-        };
-      },
-      presentation: attach,
-    });
-  }
+      };
+    },
+    presentation: attach,
+  });
 }
 
-/** Commands for the image presentation. */
-export namespace Image {
-  /** Retry the image resolver after its external mapping has changed. */
-  export const refresh: Command = editor => {
-    if (editor.isDestroyed()) throw new Error('Editor is destroyed');
-    const view = editor.view;
-    const plugin = view && presentationKey.get(view.state);
-    if (!view || !plugin) return false;
-    plugin.spec.presentation(view).refresh();
-    return true;
-  };
+/** Refresh mounted images after their image providers or external URL mappings change. */
+export function refreshImages(editor: KagamiMD): void {
+  const view = editor.view;
+  const plugin = view && presentationKey.get(view.state);
+  if (!view || !plugin) return;
+  plugin.spec.presentation(view).refresh(true);
 }
 
 /** State owns decoration identities; the native view supplies each mounted widget. */
 function draw(node: Node, position: number, previous: DecorationSet,
-  attach: (view: EditorView) => ImagePresentation): Decoration[] {
-  const occurrences: image.Occurrence[] = [];
+  attach: (view: EditorView) => ImagePresentation,
+  note?: (id: string, occurrence: ImageOccurrence) => void): Decoration[] {
+  const occurrences: ImageOccurrence[] = [];
   collect(node, position, occurrences);
   const retained = previous.find(position, position + node.nodeSize);
   return occurrences.map(occurrence => {
     const old = retained.find(decoration => decoration.from === occurrence.to);
     const id: string = old?.spec.key ?? `image-occurrence:${++nextId}`;
+    note?.(id, occurrence);
     return standIn(occurrence.to, (view, getPos) => attach(view).mount(id, getPos, occurrence), {
-      key: id, side: 1, ignoreSelection: false,
+      key: id, side: 1, ignoreSelection: false, occurrence,
       destroy: dom => {
         const widget = (dom as WidgetDOM).imageWidget;
         widget?.presentation.release(id, widget);
@@ -197,7 +195,7 @@ class ImageEdit {
       if (this.text.slice(change.from, change.to) === change.text) continue;
       tr.insertText(change.text, this.from + change.from, this.from + change.to);
     }
-    return tr.docChanged ? history.isolate(tr) : null;
+    return tr.docChanged ? isolateHistory(tr) : null;
   }
 
   private markdown(syntax: ImageSyntax, offset: number): void {
@@ -237,7 +235,7 @@ class ImageEdit {
 }
 
 /** The parser's image attributes supply presentation without reading the raw tag. */
-function readOccurrence(attrs: Attrs, from: number, to: number): image.Occurrence {
+function readOccurrence(attrs: Attrs, from: number, to: number): ImageOccurrence {
   return {
     from, to,
     src: attrs.destination,
@@ -249,9 +247,9 @@ function readOccurrence(attrs: Attrs, from: number, to: number): image.Occurrenc
 }
 
 /** Pieces carrying the same parser occurrence make one image, including nested marks. */
-function readMarkedImages(textblock: Node, start: number, types: readonly MarkType[]): image.Occurrence[] {
-  const found = new Map<MarkType, Map<number, image.Occurrence>>();
-  const result: image.Occurrence[] = [];
+function readMarkedImages(textblock: Node, start: number, types: readonly MarkType[]): ImageOccurrence[] {
+  const found = new Map<MarkType, Map<number, ImageOccurrence>>();
+  const result: ImageOccurrence[] = [];
   textblock.forEach((child, offset) => {
     for (const mark of child.marks) {
       if (!types.includes(mark.type)) continue;
@@ -272,13 +270,13 @@ function readMarkedImages(textblock: Node, start: number, types: readonly MarkTy
   return result.filter(occurrence => occurrence.src);
 }
 
-function readAll(textblock: Node, start: number): image.Occurrence[] {
-  const result = image.read(textblock, start);
-  result.push(...image.html(textblock, start));
+function readAll(textblock: Node, start: number): ImageOccurrence[] {
+  const result = readImages(textblock, start);
+  result.push(...htmlImages(textblock, start));
   return result.sort((a, b) => a.from - b.from);
 }
 
-function collect(node: Node, position: number, result: image.Occurrence[]): void {
+function collect(node: Node, position: number, result: ImageOccurrence[]): void {
   if (node.isTextblock) {
     result.push(...readAll(node, position + 1));
   } else {
@@ -289,13 +287,30 @@ function collect(node: Node, position: number, result: image.Occurrence[]): void
 /** A widget keeps its current position while the decoration maps through edits. */
 interface WidgetDOM extends HTMLImageElement { imageWidget?: ImageWidget }
 
+interface ResolvedImageSource {
+  readonly destination: string;
+  readonly generation: number;
+  readonly settled: boolean;
+  readonly src: string;
+}
+
+interface PendingImageLookup {
+  readonly destination: string;
+  readonly generation: number;
+  readonly controller: AbortController;
+}
+
 class ImageWidget {
   readonly dom: WidgetDOM;
   private unregister: (() => void) | null = null;
+  private resolved: ResolvedImageSource | null = null;
+  private pending: PendingImageLookup | null = null;
+  private lookupId = 0;
+  private destroyed = false;
 
   constructor(readonly presentation: ImagePresentation,
-    public getPos: () => number | undefined, occurrence: image.Occurrence) {
-    this.dom = image.widget(presentation.view.dom.ownerDocument, occurrence);
+    public getPos: () => number | undefined, public occurrence: ImageOccurrence) {
+    this.dom = imageWidget(presentation.view.dom.ownerDocument, occurrence);
     this.dom.imageWidget = this;
     this.dom.addEventListener('load', this.loaded);
     registerRenderedSource(this.dom, () => {
@@ -304,7 +319,7 @@ class ImageWidget {
     });
   }
 
-  read(): image.Occurrence | null {
+  read(): ImageOccurrence | null {
     const view = this.presentation.view;
     const position = this.getPos();
     if (view.isDestroyed || !view.dom.contains(this.dom) || position === undefined ||
@@ -313,16 +328,76 @@ class ImageWidget {
     return at.parent.isTextblock ? readAll(at.parent, at.start()).find(value => value.to === position) ?? null : null;
   }
 
-  paint(value: image.Occurrence): void {
+  paint(value: ImageOccurrence): void {
+    this.occurrence = value;
     const dom = this.dom;
-    const src = this.presentation.resolve(value.src);
-    if (dom.getAttribute('src') !== src) dom.setAttribute('src', src);
+    this.syncSource(value.src);
     if (dom.title !== value.title) {
       if (value.title) dom.title = value.title;
       else dom.removeAttribute('title');
     }
     if (dom.alt !== (value.alt ?? '')) dom.alt = value.alt ?? '';
-    if (!this.presentation.resizing?.active(this)) image.applySize(dom, value.width, value.height);
+    if (!this.presentation.resizing?.active(this)) applyImageSize(dom, value.width, value.height);
+  }
+
+  abort(): void {
+    if (!this.pending) return;
+    const pending = this.pending;
+    this.pending = null;
+    pending.controller.abort();
+  }
+
+  retireStale(): void {
+    if (!this.pending) return;
+    if (!this.presentation.view.dom.contains(this.dom) ||
+        this.occurrence.src !== this.pending.destination ||
+        this.presentation.generation !== this.pending.generation) {
+      this.abort();
+    }
+  }
+
+  private syncSource(destination: string): void {
+    const generation = this.presentation.generation;
+    if (this.resolved?.destination === destination && this.resolved.generation === generation) {
+      if (this.resolved.settled && this.dom.getAttribute('src') !== this.resolved.src) {
+        this.dom.setAttribute('src', this.resolved.src);
+      }
+      return;
+    }
+    this.abort();
+    const id = ++this.lookupId;
+    const controller = new AbortController();
+    const pending: PendingImageLookup = { destination, generation, controller };
+    this.pending = pending;
+    const stale = () => controller.signal.aborted || this.destroyed || this.presentation.view.isDestroyed ||
+      (this.presentation.editor?.isDestroyed() ?? false) || this.lookupId !== id ||
+      this.presentation.generation !== generation;
+    const resolution = this.presentation.resolve(destination, controller.signal);
+    switch (resolution.kind) {
+      case 'sync':
+        if (this.pending === pending) this.pending = null;
+        if (stale()) return;
+        this.resolved = { destination, generation, settled: true, src: resolution.src };
+        if (this.dom.getAttribute('src') !== resolution.src) this.dom.setAttribute('src', resolution.src);
+        return;
+      case 'async':
+        if (stale()) {
+          if (this.pending === pending) this.pending = null;
+          controller.abort();
+          return;
+        }
+        this.resolved = { destination, generation, settled: false, src: destination };
+        if (this.dom.getAttribute('src') !== destination) this.dom.setAttribute('src', destination);
+        void resolution.promise.then(src => {
+          if (this.pending === pending) this.pending = null;
+          if (stale() || this.occurrence.src !== destination) return;
+          this.resolved = { destination, generation, settled: true, src };
+          if (!this.presentation.frozen() && this.dom.getAttribute('src') !== src) {
+            this.dom.setAttribute('src', src);
+          }
+        });
+        return;
+    }
   }
 
   attach(resizing: ImageResizing | null): void {
@@ -331,11 +406,14 @@ class ImageWidget {
   }
 
   private loaded = (): void => {
-    const value = this.read();
-    if (value && !this.presentation.frozen()) this.paint(value);
+    if (this.destroyed || !this.presentation.view.dom.contains(this.dom) || this.presentation.frozen()) return;
+    this.paint(this.occurrence);
   };
 
   destroy(): void {
+    this.destroyed = true;
+    this.lookupId++;
+    this.abort();
     this.attach(null);
     this.dom.removeEventListener('load', this.loaded);
     this.dom.imageWidget = undefined;
@@ -348,30 +426,59 @@ interface Gesture {
   moved: boolean;
 }
 
+type ImageResolution = { readonly kind: 'sync'; readonly src: string }
+  | { readonly kind: 'async'; readonly promise: Promise<string> };
+
 /** One native view owns the image gestures, resolver and mounted widgets it shows. */
 class ImagePresentation {
   resizing: ImageResizing | null = null;
   gesture: Gesture | null = null;
+  generation = 0;
   private readonly widgets = new Map<string, ImageWidget>();
+  private readonly dirty = new Set<string>();
+  private lastDecorations: DecorationSet | null = null;
   private window: Window | null = null;
 
-  constructor(readonly view: EditorView) {}
+  constructor(readonly view: EditorView, readonly editor?: KagamiMD) {}
 
   update(_view: EditorView, previous: EditorState): void {
     if (previous.doc !== this.view.state.doc) this.gesture = null;
+    const before = presentationKey.getState(previous) ?? null;
+    const after = presentationKey.getState(this.view.state) ?? null;
+    if (after && before !== this.lastDecorations) {
+      for (const decoration of after.find()) {
+        const id = decoration.spec.key as string | undefined;
+        const occurrence = decoration.spec.occurrence as ImageOccurrence | undefined;
+        if (id && occurrence) this.noteOccurrence(id, occurrence);
+      }
+    }
+    this.lastDecorations = after;
     this.refresh();
   }
 
-  mount(id: string, getPos: () => number | undefined, occurrence: image.Occurrence): HTMLImageElement {
+  noteOccurrence(id: string, occurrence: ImageOccurrence): void {
+    const widget = this.widgets.get(id);
+    if (!widget || widget.occurrence === occurrence) return;
+    widget.occurrence = occurrence;
+    this.dirty.add(id);
+  }
+
+  mount(id: string, getPos: () => number | undefined, occurrence: ImageOccurrence): HTMLImageElement {
     const known = this.widgets.get(id);
     if (known) {
       known.getPos = getPos;
+      this.noteOccurrence(id, occurrence);
+      if (!this.frozen()) {
+        this.dirty.delete(id);
+        known.paint(occurrence);
+      }
       return known.dom;
     }
     const widget = new ImageWidget(this, getPos, occurrence);
     this.widgets.set(id, widget);
     widget.attach(this.resizing);
-    if (!this.frozen()) widget.paint(occurrence);
+    if (this.frozen()) this.dirty.add(id);
+    else widget.paint(occurrence);
     return widget.dom;
   }
 
@@ -381,17 +488,68 @@ class ImagePresentation {
         presentationKey.getState(this.view.state)?.find().some(decoration => decoration.spec.key === id)) return;
     widget.destroy();
     this.widgets.delete(id);
+    this.dirty.delete(id);
   }
 
-  resolve(destination: string): string {
-    const view = this.view;
-    const editor = findEditor(view.dom);
-    try {
-      return editor?.spec.resolveImage?.(destination) ?? destination;
-    } catch (error) {
-      queueMicrotask(() => { if (!view.isDestroyed) editor?.errors.fire(error); });
-      return destination;
+  resolve(destination: string, signal: AbortSignal): ImageResolution {
+    const providers = this.editor?.getImageProviders() ?? [];
+    for (let index = 0; index < providers.length; index++) {
+      if (this.stopped(signal)) return { kind: 'sync', src: destination };
+      let candidate: string | null | Promise<string | null>;
+      try {
+        candidate = providers[index]!.resolveImageURL(destination, signal);
+      } catch (error) {
+        if (this.stopped(signal)) return { kind: 'sync', src: destination };
+        this.report(error, signal);
+        continue;
+      }
+      if (this.stopped(signal)) return { kind: 'sync', src: destination };
+      if (candidate === null) continue;
+      if (typeof candidate === 'string') return { kind: 'sync', src: candidate };
+      return { kind: 'async', promise: this.resolveAsync(destination, providers, index, candidate, signal) };
     }
+    return { kind: 'sync', src: destination };
+  }
+
+  private async resolveAsync(
+    destination: string,
+    providers: readonly KagamiMD.ImageProvider[],
+    startIndex: number,
+    firstPromise: Promise<string | null>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    try {
+      const first = await firstPromise;
+      if (this.stopped(signal)) return destination;
+      if (typeof first === 'string') return first;
+    } catch (error) {
+      if (this.stopped(signal)) return destination;
+      this.report(error, signal);
+    }
+    for (let index = startIndex + 1; index < providers.length; index++) {
+      if (this.stopped(signal)) return destination;
+      try {
+        const next = await providers[index]!.resolveImageURL(destination, signal);
+        if (this.stopped(signal)) return destination;
+        if (typeof next === 'string') return next;
+      } catch (error) {
+        if (this.stopped(signal)) return destination;
+        this.report(error, signal);
+      }
+    }
+    return destination;
+  }
+
+  private stopped(signal: AbortSignal): boolean {
+    return signal.aborted || this.view.isDestroyed || (this.editor?.isDestroyed() ?? false);
+  }
+
+  private report(error: unknown, signal?: AbortSignal): void {
+    const view = this.view;
+    const editor = this.editor;
+    queueMicrotask(() => {
+      if (!signal?.aborted && !view.isDestroyed && editor && !editor.isDestroyed()) editor._onDidError.fire(error);
+    });
   }
 
   frozen(): boolean {
@@ -401,14 +559,28 @@ class ImagePresentation {
       compositionState(view.state)?.isComposing);
   }
 
-  refresh(): void {
+  refresh(providersChanged = false): void {
     if (this.view.isDestroyed) return;
-    if (this.window !== this.view.dom.ownerDocument.defaultView) this.connect();
+    if (providersChanged) {
+      this.generation++;
+      for (const [id, widget] of this.widgets) {
+        this.dirty.add(id);
+        widget.retireStale();
+      }
+    } else {
+      for (const id of this.dirty) this.widgets.get(id)?.retireStale();
+    }
+    if (this.window !== this.view.dom.ownerDocument.defaultView) {
+      this.connect();
+      return;
+    }
     this.resizing?.update();
-    if (this.frozen()) return;
-    for (const widget of this.widgets.values()) {
-      const value = widget.read();
-      if (value) widget.paint(value);
+    if (this.frozen() || !this.dirty.size) return;
+    const ids = [...this.dirty];
+    this.dirty.clear();
+    for (const id of ids) {
+      const widget = this.widgets.get(id);
+      if (widget && this.view.dom.contains(widget.dom)) widget.paint(widget.occurrence);
     }
   }
 
@@ -417,6 +589,7 @@ class ImagePresentation {
     this.disconnect();
     const view = this.view;
     this.window = view.dom.ownerDocument.defaultView!;
+    this.lastDecorations = presentationKey.getState(view.state) ?? null;
     this.resizing = new ImageResizing(view);
     for (const widget of this.widgets.values()) widget.attach(this.resizing);
     view.dom.addEventListener('mousedown', this.down, true);
@@ -438,7 +611,7 @@ class ImagePresentation {
     this.gesture = null;
   }
 
-  private occurrence(target: EventTarget | null): image.Occurrence | null {
+  private occurrence(target: EventTarget | null): ImageOccurrence | null {
     if (!(target instanceof this.view.dom.ownerDocument.defaultView!.Element)) return null;
     const dom = target.closest<HTMLElement>("[data-image-widget='true']");
     return dom ? (dom as WidgetDOM).imageWidget?.read() ?? null : null;
@@ -501,7 +674,7 @@ function interactive(view: EditorView): boolean {
   return view.editable && !view.composing && !compositionState(view.state)?.isComposing;
 }
 
-function select(view: EditorView, occurrence: image.Occurrence, kind: 'alt' | 'full'): void {
+function select(view: EditorView, occurrence: ImageOccurrence, kind: 'alt' | 'full'): void {
   let from = occurrence.from;
   let to = occurrence.to;
   if (kind === 'alt') {
@@ -528,14 +701,15 @@ function imageSyntax(state: EditorState, from: number,
   to: number): ImageSyntax | HTMLImageSyntax | WikiEmbedSyntax | null {
   const at = state.doc.resolve(from);
   if (!at.parent.isTextblock || at.parent.type.spec.code || to > at.end()) return null;
+  const currentParser = getParser(state);
   if (at.parent.type === state.schema.nodes.htmlTagBlock) {
     if (from !== at.start() || to !== at.end()) return null;
-    const blocks = parseBlocks(fieldSource(at.parent), { target: 'editor' });
+    const blocks = currentParser.parseBlocks(fieldSource(at.parent));
     const block = blocks[0];
     return blocks.length === 1 && block instanceof HTMLTagBlockSyntax && block.tag instanceof HTMLImageSyntax
       ? block.tag : null;
   }
-  const reading = readField(at, bindings.get(state));
+  const reading = readField(at, currentParser, BindingState.get(state));
   if (reading.kind === 'blocks') return null;
   let found: ImageSyntax | HTMLImageSyntax | WikiEmbedSyntax | null = null;
   walkInline(reading.children, node => {
@@ -586,8 +760,8 @@ class ResizeDrag {
     if (this.handle.hasPointerCapture?.(this.pointerId)) this.handle.releasePointerCapture(this.pointerId);
   }
 
-  commit(state: EditorState, occurrence: image.Occurrence): Transaction | null {
-    return image.resize(state, occurrence.from, occurrence.to,
+  commit(state: EditorState, occurrence: ImageOccurrence): Transaction | null {
+    return resizeImage(state, occurrence.from, occurrence.to,
       Math.max(1, Math.round(this.width)), Math.max(1, Math.round(this.width / this.ratio)));
   }
 }

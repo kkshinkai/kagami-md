@@ -8,12 +8,11 @@
  *
  * Derived from mdast-util-from-markdown, https://github.com/syntax-tree/mdast-util-from-markdown. */
 
-import { ReferenceLabels } from '../syntax/reading.js';
+import { ReferenceLabels } from '../syntax/parse.js';
 import { Syntax } from '../syntax/syntax.js';
 import { DocumentSyntax } from '../syntax/block.js';
 import { InlineSyntax } from '../syntax/inline.js';
-import type { Event, FullNormalizedExtension, ParseOptions, Point, Token } from '../types/index.js';
-import type { Bindings, Target } from '../syntax/reading.js';
+import type { Event, ParseOptions, Point, Target, Token } from '../types/index.js';
 import type { Width } from './width.js';
 
 /**
@@ -40,8 +39,8 @@ export namespace CompileContext {
   export interface Shared {
     /** Kagami: the complete input shared by the handlers of this compilation. */
     source: string;
-    /** Kagami: the grammar of this reading, including its field boundaries. */
-    grammar: FullNormalizedExtension | null | undefined;
+    /** Kagami: whether blocks are compiled from a phrasing field rather than a file. */
+    phrasingBlocks: boolean;
     /** Kagami: whether outer paragraph whitespace is authored inline content. */
     authoredParagraph: boolean;
     /** Which reading the caller requested. */
@@ -348,26 +347,24 @@ export type OnExitError = (
  * Configuration.
  */
 export interface Options extends ParseOptions {
-  /** What the text is read for. */
-  target?: Target | undefined;
+  /**
+   * Pre-built compiler configuration shared across readings.
+   */
+  config?: Config | undefined;
   /**
    * Extensions for this utility to change how tokens are turned into a tree.
    */
   mdastExtensions?: Array<Extension | Array<Extension>> | null | undefined;
   /**
-   * Kagami: the grammar the value is read with (default: a whole document).
+   * Kagami: whether blocks are compiled from a phrasing field rather than a file,
+   * so opening paragraph indentation belongs to the user's inline text.
    */
-  grammar?: FullNormalizedExtension | null | undefined;
+  phrasingBlocks?: boolean | null | undefined;
   /**
    * Kagami: what the value is (default: `'document'`); the text of a field
    * is `'text'` or `'string'`, with no block around it.
    */
   contentType?: 'document' | 'string' | 'text' | null | undefined;
-  /**
-   * Kagami: the definitions and footnotes elsewhere, which references in the
-   * value may resolve to.
-   */
-  bindings?: Bindings | null | undefined;
   /**
    * Kagami: whether the value is the content of a table cell.
    */

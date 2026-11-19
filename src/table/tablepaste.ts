@@ -9,22 +9,22 @@ import { Fragment, Slice } from 'prosemirror-model';
 import { TextSelection } from 'prosemirror-state';
 import { CellSelection, handlePaste, isInTable } from 'prosemirror-tables';
 import type { EditorView } from 'prosemirror-view';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { replace } from '../transform/transform.js';
-import { paste } from '../editor/paste.js';
+import { cellPasteContent, plainTextSlice } from '../editor/paste.js';
 
 /** Paste a native rectangle, or read ordinary content as the receiving GFM cell's text. */
 export function tablePaste(view: EditorView, event: ClipboardEvent, slice: Slice): boolean {
   const { state } = view;
   if (!isInTable(state)) return false;
   if (!slice.content.size)
-    slice = paste.text(event.clipboardData?.getData('text/plain') ?? '', state.selection.$from);
+    slice = plainTextSlice(event.clipboardData?.getData('text/plain') ?? '', state.selection.$from);
   if (!slice.content.size) return true;
 
   if (slice.content.content.every(node => node.type.spec.tableRole))
     return handlePaste(view, event, slice);
 
-  const content = paste.cell(slice, state.selection.$from);
+  const content = cellPasteContent(slice, state.selection.$from);
   if (!content.size) return true;
   if (state.selection instanceof CellSelection) {
     const { tableCell, tableParagraph } = state.schema.nodes;
@@ -36,6 +36,6 @@ export function tablePaste(view: EditorView, event: ClipboardEvent, slice: Slice
   const end = state.selection.to;
   replace(tr, state.selection.from, end, new Slice(content, 0, 0));
   tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(end, 1)), -1));
-  view.dispatch(history.isolate(tr).setMeta('paste', true).setMeta('uiEvent', 'paste').scrollIntoView());
+  view.dispatch(isolateHistory(tr).setMeta('paste', true).setMeta('uiEvent', 'paste').scrollIntoView());
   return true;
 }

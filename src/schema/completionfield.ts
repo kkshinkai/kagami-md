@@ -5,10 +5,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { DelimitedSyntax, Syntax, transduce, type Phrasing } from '../syntax/index.js';
+import { DelimitedSyntax, Syntax, type Phrasing } from '../syntax/index.js';
 import type { MarkType, ResolvedPos } from 'prosemirror-model';
 import { TextSelection, type EditorState } from 'prosemirror-state';
-import { bindings } from '../state/bindings.js';
+import { BindingState } from '../state/bindings.js';
+import { getParser } from '../state/parser.js';
 import { fieldSource } from '../parse/field.js';
 import { walkInline } from '../parse/inline.js';
 import { pendingMarks, schema } from '../types/schema.js';
@@ -71,9 +72,12 @@ export class CompletionField {
 
   /** A replacement is checked in the same field and parser mode as its prompt. */
   parse(source: string, firstInBlockQuote = false): readonly Syntax[] {
-    const analysis = transduce(source, {
-      phrasing: this.mode, firstInListItem: false, firstInBlockQuote,
-    }, bindings.get(this.state));
+    const analysis = getParser(this.state).transduce(source, {
+      bindings: BindingState.get(this.state),
+      phrasing: this.mode,
+      firstInListItem: false,
+      firstInBlockQuote,
+    });
     if (analysis.kind !== 'inline') return [];
     const tokens: Syntax[] = [];
     walkInline(analysis.children, node => {

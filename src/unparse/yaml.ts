@@ -13,7 +13,7 @@ import { schema } from '../types/schema.js';
 import { SpelledPair } from './yamlpair.js';
 
 /** Write a YAML value or pair through the YAML library's own stringifiers. */
-export function yaml(node: Node): string {
+export function unparseYAML(node: Node): string {
   const context = new YAMLContext();
   if (node.type === schema.nodes.yamlPair) {
     const mapping = new YAMLMap<YAMLNode, YAMLNode>(context.document.schema);
@@ -25,24 +25,22 @@ export function yaml(node: Node): string {
   return context.document.toString({ lineWidth: 0 }).replace(/\n$/, '');
 }
 
-export namespace yaml {
-  /** Write front matter's mapping and document comments without its fences. */
-  export function body(node: Node): string {
-    const root = node.firstChild;
-    if (!root) throw new RangeError('YAML front matter requires its mapping');
-    const context = new YAMLContext();
-    const spelling = node.attrs.spelling;
-    context.document.contents = context.node(root);
-    context.document.commentBefore = spelling?.commentBefore ?? null;
-    context.document.comment = spelling?.trailingComment ?? null;
-    return context.document.toString({ indent: spelling?.indent ?? 2, lineWidth: 0 }).replace(/\n$/, '');
-  }
+/** Write front matter's mapping and document comments without its fences. */
+export function unparseYAMLBody(node: Node): string {
+  const root = node.firstChild;
+  if (!root) throw new RangeError('YAML front matter requires its mapping');
+  const context = new YAMLContext();
+  const spelling = node.attrs.spelling;
+  context.document.contents = context.node(root);
+  context.document.commentBefore = spelling?.commentBefore ?? null;
+  context.document.comment = spelling?.trailingComment ?? null;
+  return context.document.toString({ indent: spelling?.indent ?? 2, lineWidth: 0 }).replace(/\n$/, '');
+}
 
-  /** Write the mapping between its recorded front matter fences. */
-  export function frontMatter(node: Node): string {
-    const fence: string = node.attrs.spelling?.fence ?? '---';
-    return fence + '\n' + body(node) + '\n' + fence;
-  }
+/** Write the mapping between its recorded front matter fences. */
+export function unparseFrontMatter(node: Node): string {
+  const fence: string = node.attrs.spelling?.fence ?? '---';
+  return fence + '\n' + unparseYAMLBody(node) + '\n' + fence;
 }
 
 /** The YAML schema and document shared by the conversion of a value's children. */

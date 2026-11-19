@@ -10,7 +10,6 @@
 
 import type { Event, Point } from '../types/index.js';
 import type { Options } from './types.js';
-import { wholeDocument } from '../constructs/bundle.js';
 import { parse } from '../kernel/parse.js';
 import { postprocess } from '../kernel/postprocess.js';
 import { preprocess } from '../kernel/preprocess.js';
@@ -41,13 +40,13 @@ function tokenize(
   from?: Point.Source
 ): Array<Event> {
   const settings = options || {};
-  const parser = parse(options);
-  parser.constructs = settings.grammar || wholeDocument;
-  parser.cjkFriendly = true;
-  parser.target = settings.target;
-
-  // External bindings are consulted at the reference that needs them.
-  parser.bindings = settings.bindings || undefined;
+  const parser = parse({
+    constructs: settings.constructs,
+    extensions: settings.extensions,
+    cjkFriendly: settings.cjkFriendly ?? true,
+    target: settings.target,
+    bindings: settings.bindings,
+  });
   const tokenizer = parser[settings.contentType || 'document'](from);
   if (settings.tableCell) tokenizer._gfmTableCell = true;
   return tokenizer.write(preprocess({ atDocumentStart: false })(value, undefined, true));

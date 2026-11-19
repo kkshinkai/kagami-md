@@ -45,7 +45,7 @@ import { parseEvents } from './events.js';
 import { postprocess } from '../kernel/postprocess.js';
 import { normalizeIdentifier } from '../kernel/utils/normalize-identifier/index.js';
 import { toString } from './to-string.js';
-import type { Bindings } from '../syntax/reading.js';
+import type { Bindings } from '../types/index.js';
 
 /** Build only the pending tail selected by the paragraph's structural events. */
 export function pendingTail(

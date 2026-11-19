@@ -6,24 +6,22 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { closeHistory, isHistoryTransaction } from 'prosemirror-history';
-import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type Transaction } from 'prosemirror-state';
+import { Plugin, PluginKey, TextSelection, type Command as PMCommand, type EditorState, type Transaction } from 'prosemirror-state';
 import { ReplaceStep } from 'prosemirror-transform';
 import type { EditorView } from 'prosemirror-view';
 import { isFormattingTransaction } from '../schema/format.js';
-import { history } from '../state/history.js';
+import { isolateHistory, restoringHistory } from '../state/history.js';
 import { compositionState, compositionCommit } from '../state/input.js';
 import type { KagamiMD } from './editor.js';
-import { findEditor } from './dom.js';
-import type { Command as PublicCommand } from '../command/command.js';
-import type { Tag } from '../schema/tag.js';
-import type { Wikilink } from '../schema/wikilink.js';
-import type { Callout } from '../schema/callout.js';
 
-/** Mapped prompts and a view that owns asynchronous lookup, geometry, and accessibility. */
-export function completion(sources: readonly Completion.Source<Completion.Candidate>[]): Plugin<completion.State> {
-  const attachment: Attachment = { view: null };
-  return new Plugin<completion.State>({
-    key: completion.key,
+/** Mapped prompts and a view that owns asynchronous lookup and geometry. */
+export function completion(
+  sources: readonly CompletionSource<KagamiMD.CompletionCandidate>[],
+  editor?: KagamiMD,
+): Plugin<CompletionState> {
+  const attachment: CompletionAttachment = { view: null };
+  return new Plugin<CompletionState>({
+    key: completionKey,
     state: { init: () => ({ serial: 0, active: null, dismissed: null, attachment }), apply: (tr, previous, old, state) => {
       const next = applyCompletion(tr, previous, old, state);
       return attachment.view ? reconcile(tr, next, state, sources, attachment.view.editor) : next;
@@ -32,174 +30,182 @@ export function completion(sources: readonly Completion.Source<Completion.Candid
       handleKeyDown(view, event) {
         if (!available(view) || event.isComposing || event.keyCode === 229 ||
             event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
-        const active = completion.key.getState(view.state)?.active;
+        const active = completionKey.getState(view.state)?.active;
         if (!active) return false;
-        if (event.key === 'Escape') return completion.dismiss(view.state, view.dispatch);
+        if (event.key === 'Escape') return dismissCompletion(view.state, view.dispatch);
         if (active.status !== 'ready' || !active.items.length ||
             event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return false;
-        view.dispatch(view.state.tr.setMeta(completion.key, {
+        view.dispatch(view.state.tr.setMeta(completionKey, {
           kind: 'select', index: active.selectedIndex + (event.key === 'ArrowUp' ? -1 : 1),
-        } satisfies completion.Meta));
+        } satisfies CompletionMeta));
         return true;
       },
       handlePaste(view) {
-        completion.dismiss(view.state, view.dispatch);
+        dismissCompletion(view.state, view.dispatch);
         return false;
       },
       handleDrop(view) {
-        completion.dismiss(view.state, view.dispatch);
+        dismissCompletion(view.state, view.dispatch);
         return false;
       },
       handleDOMEvents: { blur(view) {
-        completion.dismiss(view.state, view.dispatch);
+        dismissCompletion(view.state, view.dispatch);
         return false;
       } },
     },
     view(view) {
-      return attachment.view = new CompletionView(view, attachment);
+      return attachment.view = new CompletionView(view, attachment, editor ?? null);
     },
   });
 }
 
-export namespace completion {
-  export interface Active {
-    readonly requestId: number;
-    readonly source: Completion.Source<Completion.Candidate>;
-    readonly context: Completion.Prompt;
-    readonly status: 'pending' | 'ready';
-    readonly items: readonly Completion.Candidate[];
-    readonly selectedIndex: number;
-  }
+export interface CompletionAttachment {
+  view: { readonly editor: KagamiMD | null; read(): KagamiMD.Completion | null } | null;
+}
 
-  export interface Dismissed {
-    readonly source: Completion.Source<Completion.Candidate>;
-    readonly from: number;
-  }
+export interface ActiveCompletion {
+  readonly requestId: number;
+  readonly source: CompletionSource<KagamiMD.CompletionCandidate>;
+  readonly context: CompletionPrompt;
+  readonly status: 'pending' | 'ready';
+  readonly items: readonly KagamiMD.CompletionCandidate[];
+  readonly selectedIndex: number;
+}
 
-  export interface State {
-    readonly attachment: Attachment;
-    readonly serial: number;
-    readonly active: Active | null;
-    readonly dismissed: Dismissed | null;
-  }
+export interface DismissedCompletion {
+  readonly source: CompletionSource<KagamiMD.CompletionCandidate>;
+  readonly from: number;
+}
 
-  export type Meta = { kind: 'dismiss' | 'accept' }
-    | { kind: 'select'; index: number }
-    | { kind: 'results'; requestId: number; items: readonly Completion.Candidate[] }
-    | { kind: 'refresh'; state: State };
+export interface CompletionState {
+  readonly attachment: CompletionAttachment;
+  readonly serial: number;
+  readonly active: ActiveCompletion | null;
+  readonly dismissed: DismissedCompletion | null;
+}
 
-  export const key = new PluginKey<State>('markdown-completion');
+type CompletionMeta = { kind: 'dismiss' | 'accept' }
+  | { kind: 'select'; index: number }
+  | { kind: 'results'; requestId: number; items: readonly KagamiMD.CompletionCandidate[] }
+  | { kind: 'providers'; target: 'tag' | 'wikilink'; enabled: boolean };
 
-  /** Dismiss the prompt without editing its source or selection. */
-  export const dismiss: Command = (state, dispatch) => {
-    if (!key.getState(state)?.active) return false;
-    dispatch?.(state.tr.setMeta(key, { kind: 'dismiss' } satisfies Meta));
+export const completionKey = new PluginKey<CompletionState>('markdown-completion');
+
+/** Dismiss the prompt without editing its source or selection. */
+const dismissCompletion: PMCommand = (state, dispatch) => {
+  if (!completionKey.getState(state)?.active) return false;
+  dispatch?.(state.tr.setMeta(completionKey, { kind: 'dismiss' } satisfies CompletionMeta));
+  return true;
+};
+
+/** Recheck the current prompt before inserting one parser-validated source replacement. */
+export function acceptCompletion(index?: number): PMCommand {
+  return (state, dispatch, view) => {
+    if (compositionState(state)?.isComposing || view && !available(view)) return false;
+    const active = completionKey.getState(state)?.active;
+    if (!active || active.status !== 'ready') return false;
+    const candidate = active.items[index ?? active.selectedIndex];
+    if (!candidate) return false;
+    const context = active.source.match(state);
+    if (!context || context.from !== active.context.from || !samePrompt(active.source, context, active.context))
+      return false;
+    const replacement = active.source.apply(candidate, context, state);
+    if (replacement === null) return false;
+    if (dispatch) {
+      const transaction = isolateHistory(state.tr).insertText(replacement, context.from, context.to);
+      transaction.setSelection(TextSelection.create(transaction.doc, context.from + replacement.length));
+      dispatch(transaction.setMeta(completionKey, { kind: 'accept' } satisfies CompletionMeta).scrollIntoView());
+      // A standalone ProseMirror view has no KagamiState history settlement.
+      if (view && !completionKey.getState(view.state)?.attachment.view?.editor) {
+        view.dispatch(closeHistory(view.state.tr));
+      }
+    }
     return true;
   };
-
-  /** Recheck the current prompt before inserting one parser-validated source replacement. */
-  export function accept(index?: number): Command {
-    return (state, dispatch, view) => {
-      if (compositionState(state)?.isComposing || view && !available(view)) return false;
-      const active = key.getState(state)?.active;
-      if (!active || active.status !== 'ready') return false;
-      const candidate = active.items[index ?? active.selectedIndex];
-      if (!candidate) return false;
-      const context = active.source.match(state);
-      if (!context || context.from !== active.context.from || !samePrompt(active.source, context, active.context))
-        return false;
-      const replacement = active.source.apply(candidate, context, state);
-      if (replacement === null) return false;
-      if (dispatch) {
-        const transaction = history.isolate(state.tr).insertText(replacement, context.from, context.to);
-        transaction.setSelection(TextSelection.create(transaction.doc, context.from + replacement.length));
-        dispatch(transaction.setMeta(key, { kind: 'accept' } satisfies Meta).scrollIntoView());
-        // A standalone ProseMirror view has no State completion hook.
-        if (view) view.dispatch(closeHistory(view.state.tr));
-      }
-      return true;
-    };
-  }
-
-  /** Clear attachment-owned prompts before the view is destroyed. */
-  export function detach(view: EditorView): void {
-    const state = key.getState(view.state)!;
-    if (state.active || state.dismissed) view.dispatch(view.state.tr.setMeta(key, {
-      kind: 'refresh', state: { ...state, active: null, dismissed: null },
-    } satisfies Meta));
-  }
 }
 
-/** The source's own data distinguishes the completion a host draws. */
-export type Completion = Tag.Completion | Wikilink.Completion | Callout.Completion;
-
-export namespace Completion {
-  /** One offered value, with its stable identity and optional presentation. */
-  export interface Candidate {
-    readonly id: string;
-    readonly value: string;
-    readonly label?: string;
-    readonly description?: string;
-  }
-
-  /** Positions address the current document. Features may add their own prompt data. */
-  export interface Prompt {
-    readonly query: string;
-    readonly from: number;
-    readonly to: number;
-  }
-
-  /** The measured presentation of one source's candidates. */
-  export interface State<C extends Candidate> {
-    readonly query: string;
-    readonly pending: boolean;
-    readonly items: readonly C[];
-    readonly active: number;
-    readonly rect: DOMRectReadOnly;
-  }
-
-  /** Recognition, lookup, writing and presentation belong to the feature. */
-  export interface Source<C extends Candidate, P extends Prompt = Prompt> {
-    match(state: EditorState): P | null;
-    enabled(editor: KagamiMD | null): boolean;
-    candidates(query: string, signal: AbortSignal, editor: KagamiMD | null): readonly C[] | Promise<readonly C[]>;
-    apply(candidate: C, prompt: P, state: EditorState): string | null;
-    same(a: P, b: P): boolean;
-    publish(state: State<C>, prompt: P): Completion;
-  }
-
-  /** The completion currently open at the caret, with the feature's typed candidates. */
-  export function current(editor: KagamiMD): Completion | null {
-    const view = editor.view;
-    if (editor.isDestroyed() || !view) return null;
-    return completion.key.getState(view.state)?.attachment.view?.read() ?? null;
-  }
-
-  /** Put the active candidate, or the candidate at an explicit index, in the text. */
-  export const accept: PublicCommand.Pure<number | void> = ({ state }, index) =>
-    (index === undefined || Number.isInteger(index)) &&
-      state.runCommand(completion.accept(typeof index === 'number' ? index : undefined));
-
-  /** Make a candidate of the open completion active. */
-  export const activate: PublicCommand.Pure<number> = ({ state }, index) => state.runCommand((current, dispatch) => {
-    const active = completion.key.getState(current)?.active;
-    if (!active || active.status !== 'ready' || !Number.isInteger(index) || index < 0 || index >= active.items.length)
-      return false;
-    if (active.selectedIndex !== index)
-      dispatch?.(current.tr.setMeta(completion.key, { kind: 'select', index } satisfies completion.Meta));
-    return true;
-  });
-
-  /** Dismiss the prompt without changing its source or selection. */
-  export const dismiss: PublicCommand.Pure = ({ state }) => state.runCommand(completion.dismiss);
+/** Positions address the current document. Features may add their own prompt data. */
+export interface CompletionPrompt {
+  readonly query: string;
+  readonly from: number;
+  readonly to: number;
 }
 
-interface Attachment {
-  view: CompletionView | null;
+/** Actions bound to one active completion prompt. */
+export interface CompletionActions {
+  accept(index?: number): boolean;
+  activate(index: number): boolean;
+  dismiss(): boolean;
 }
 
-function samePrompt(source: Completion.Source<Completion.Candidate>, a: Completion.Prompt,
-  b: Completion.Prompt): boolean {
+/** The measured presentation of one source's candidates before attaching actions. */
+export interface CompletionSnapshot<C extends KagamiMD.CompletionCandidate> {
+  readonly query: string;
+  readonly pending: boolean;
+  readonly items: readonly C[];
+  readonly active: number;
+  readonly rect: DOMRectReadOnly;
+}
+
+/** Recognition, lookup, writing and presentation belong to the feature. */
+export interface CompletionSource<
+  C extends KagamiMD.CompletionCandidate,
+  P extends CompletionPrompt = CompletionPrompt,
+> {
+  readonly kind: 'tag' | 'wikilink' | 'callout';
+  match(state: EditorState): P | null;
+  enabled(editor: KagamiMD | null): boolean;
+  candidates(query: string, signal: AbortSignal, editor: KagamiMD | null): readonly C[] | Promise<readonly C[]>;
+  apply(candidate: C, prompt: P, state: EditorState): string | null;
+  same(a: P, b: P): boolean;
+  publish(state: CompletionSnapshot<C>, prompt: P, actions: CompletionActions): KagamiMD.Completion;
+}
+
+/** The completion currently open at the caret, with the feature's typed candidates. */
+export function readCompletion(editor: KagamiMD): KagamiMD.Completion | null {
+  const view = editor.view;
+  if (editor.isDestroyed() || !view) return null;
+  return completionKey.getState(view.state)?.attachment.view?.read() ?? null;
+}
+
+/** Query registered providers in parallel, isolating failures and keeping registration order. */
+export async function queryCompletionProviders(
+  providers: readonly KagamiMD.CompletionProvider[],
+  query: string,
+  signal: AbortSignal,
+  editor: KagamiMD | null,
+): Promise<readonly KagamiMD.CompletionCandidate[]> {
+  if (!providers.length || !editor) return [];
+  const snapshot = [...providers];
+  const lists = await Promise.all(snapshot.map(async provider => {
+    try {
+      return await provider.provideCandidates(query, signal);
+    } catch (error) {
+      if (!signal.aborted && !editor.isDestroyed()) editor._onDidError.fire(error);
+      return [];
+    }
+  }));
+  return lists.flat();
+}
+
+/** Re-query or close an active completion prompt when its provider registrations change. */
+export function refreshCompletion(
+  editor: KagamiMD,
+  target: 'tag' | 'wikilink',
+  enabled: boolean,
+): void {
+  const view = editor.view;
+  if (!view || view.isDestroyed || editor.isDestroyed()) return;
+  if (completionKey.getState(view.state)?.active?.source.kind !== target) return;
+  view.dispatch(view.state.tr.setMeta(completionKey, {
+    kind: 'providers',
+    target,
+    enabled,
+  } satisfies CompletionMeta));
+}
+
+function samePrompt(source: CompletionSource<KagamiMD.CompletionCandidate>, a: CompletionPrompt,
+  b: CompletionPrompt): boolean {
   return a.query === b.query && source.same(a, b);
 }
 
@@ -217,10 +223,9 @@ function startsPrompt(transaction: Transaction): boolean {
       step.slice.content.content.every(node => node.isText));
 }
 
-function applyCompletion(transaction: Transaction, previous: completion.State, _old: EditorState,
-  state: EditorState): completion.State {
-  const meta = transaction.getMeta(completion.key) as completion.Meta | undefined;
-  if (meta?.kind === 'refresh') return meta.state;
+function applyCompletion(transaction: Transaction, previous: CompletionState, _old: EditorState,
+  state: EditorState): CompletionState {
+  const meta = transaction.getMeta(completionKey) as CompletionMeta | undefined;
   const dismissed = previous.dismissed &&
     { ...previous.dismissed, from: transaction.mapping.map(previous.dismissed.from, 1) };
   if (meta?.kind === 'accept' || meta?.kind === 'dismiss') {
@@ -234,8 +239,20 @@ function applyCompletion(transaction: Transaction, previous: completion.State, _
     return { ...previous, active: null, dismissed };
   }
   if (!previous.active) return dismissed === previous.dismissed ? previous : { ...previous, dismissed };
+  if (meta?.kind === 'providers' && previous.active.source.kind === meta.target) {
+    if (!meta.enabled) return { ...previous, active: null, dismissed };
+    const serial = previous.serial + 1;
+    const active: ActiveCompletion = {
+      ...previous.active,
+      requestId: serial,
+      status: 'pending',
+      items: Object.freeze([]),
+      selectedIndex: 0,
+    };
+    return { ...previous, serial, active, dismissed };
+  }
   const prior = previous.active;
-  let active: completion.Active = { ...prior, context: { ...prior.context,
+  let active: ActiveCompletion = { ...prior, context: { ...prior.context,
     from: transaction.mapping.map(prior.context.from, 1), to: transaction.mapping.map(prior.context.to, -1),
   } };
   if (meta?.kind === 'results' && meta.requestId === active.requestId) {
@@ -249,14 +266,14 @@ function applyCompletion(transaction: Transaction, previous: completion.State, _
   return { ...previous, active, dismissed };
 }
 
-function reconcile(transaction: Transaction, previous: completion.State, state: EditorState,
-  sources: readonly Completion.Source<Completion.Candidate>[], editor: KagamiMD | null): completion.State {
-  if (compositionState(state)?.isComposing || history.restoring([transaction]) ||
+function reconcile(transaction: Transaction, previous: CompletionState, state: EditorState,
+  sources: readonly CompletionSource<KagamiMD.CompletionCandidate>[], editor: KagamiMD | null): CompletionState {
+  if (compositionState(state)?.isComposing || restoringHistory([transaction]) ||
       !(transaction.docChanged || transaction.selectionSet || transaction.getMeta(compositionCommit))) return previous;
   const started = startsPrompt(transaction);
   if (!previous.active && !previous.dismissed && !started) return previous;
-  let source: Completion.Source<Completion.Candidate> | undefined;
-  let context: Completion.Prompt | null = null;
+  let source: CompletionSource<KagamiMD.CompletionCandidate> | undefined;
+  let context: CompletionPrompt | null = null;
   // Later sources take precedence when more than one recognizes the same caret.
   for (let index = sources.length - 1; index >= 0; index--) {
     const candidate = sources[index]!;
@@ -267,7 +284,7 @@ function reconcile(transaction: Transaction, previous: completion.State, state: 
       break;
     }
   }
-  let next: completion.State;
+  let next: CompletionState;
   if (!context || !source?.enabled(editor)) {
     if (!previous.active && !previous.dismissed) return previous;
     next = { ...previous, active: null, dismissed: null };
@@ -297,35 +314,35 @@ interface RunningQuery {
 
 interface PublishedCompletion {
   readonly requestId: number;
-  readonly value: Completion;
+  readonly value: KagamiMD.Completion;
 }
 
-/** The attachment owns requests, measured data, and its additions to native ARIA. */
+/** The attachment owns requests and measured prompt geometry. */
 class CompletionView {
   private document: Document;
-  readonly editor: KagamiMD | null;
-  private readonly release: (() => void) | undefined;
   private request: RunningQuery | null = null;
   private published: PublishedCompletion | null = null;
-  private previousARIA: readonly (readonly [string, string | null])[] | null = null;
   private scheduled = false;
   private destroyed = false;
 
-  constructor(readonly view: EditorView, private readonly attachment: Attachment) {
-    this.editor = findEditor(view.dom);
-    this.release = this.editor?.beforeDetach(() => completion.detach(view));
+  constructor(
+    readonly view: EditorView,
+    private readonly attachment: CompletionAttachment,
+    readonly editor: KagamiMD | null,
+  ) {
     this.document = view.dom.ownerDocument;
     this.listen(true);
     this.update();
   }
 
   /** A published rectangle is usable only by the prompt and results it measured. */
-  read(): Completion | null {
-    const active = completion.key.getState(this.view.state)?.active;
+  read(): KagamiMD.Completion | null {
+    const active = completionKey.getState(this.view.state)?.active;
     const measured = this.published;
     if (this.destroyed || !available(this.view) || !this.view.dom.isConnected ||
         !active || active.requestId !== measured?.requestId ||
-        active.items !== measured.value.items) return null;
+        active.items !== measured.value.items ||
+        (active.status === 'pending') !== measured.value.pending) return null;
     if (active.selectedIndex === measured.value.active) return measured.value;
     return Object.freeze({ ...measured.value, active: active.selectedIndex });
   }
@@ -336,8 +353,7 @@ class CompletionView {
       this.document = this.view.dom.ownerDocument;
       this.listen(true);
     }
-    const active = completion.key.getState(this.view.state)?.active;
-    if (!active) this.hide();
+    const active = completionKey.getState(this.view.state)?.active;
     this.schedule();
     if (!active) {
       this.request?.controller.abort();
@@ -352,10 +368,10 @@ class CompletionView {
         .then(items => this.results(query, items))
         .catch(error => {
           if (!this.current(query)) return;
-          this.view.dispatch(this.view.state.tr.setMeta(completion.key, {
+          this.view.dispatch(this.view.state.tr.setMeta(completionKey, {
             kind: 'results', requestId: query.id, items: [],
-          } satisfies completion.Meta));
-          this.editor?.errors.fire(error);
+          } satisfies CompletionMeta));
+          this.editor?._onDidError.fire(error);
         });
     }
   }
@@ -363,10 +379,8 @@ class CompletionView {
   destroy(): void {
     this.destroyed = true;
     if (this.attachment.view === this) this.attachment.view = null;
-    this.release?.();
     this.request?.controller.abort();
     this.listen(false);
-    this.hide();
     this.published = null;
   }
 
@@ -374,21 +388,21 @@ class CompletionView {
     return !this.destroyed && !this.view.isDestroyed && !request.controller.signal.aborted && this.request === request;
   }
 
-  private results(request: RunningQuery, items: readonly Completion.Candidate[]): void {
+  private results(request: RunningQuery, items: readonly KagamiMD.CompletionCandidate[]): void {
     if (!this.current(request)) return;
-    const active = completion.key.getState(this.view.state)?.active;
+    const active = completionKey.getState(this.view.state)?.active;
     if (active?.requestId !== request.id) return;
     const seen = new Set<string>();
-    const accepted: Completion.Candidate[] = [];
+    const accepted: KagamiMD.CompletionCandidate[] = [];
     for (const candidate of items) {
       if (seen.has(candidate.id) || active.source.apply(candidate, active.context, this.view.state) === null) continue;
       seen.add(candidate.id);
       accepted.push(candidate);
       if (accepted.length === 8) break;
     }
-    this.view.dispatch(this.view.state.tr.setMeta(completion.key, {
+    this.view.dispatch(this.view.state.tr.setMeta(completionKey, {
       kind: 'results', requestId: request.id, items: accepted,
-    } satisfies completion.Meta));
+    } satisfies CompletionMeta));
   }
 
   private listen(add: boolean): void {
@@ -411,53 +425,75 @@ class CompletionView {
   };
 
   private publish(): void {
-    const active = completion.key.getState(this.view.state)?.active;
+    const active = completionKey.getState(this.view.state)?.active;
     if (!active || !available(this.view) || !this.view.dom.isConnected) {
-      this.hide();
       if (this.published) {
         this.published = null;
-        this.changed();
+        this.changed(null);
       }
       return;
     }
     const caret = this.view.coordsAtPos(active.context.from);
     const rect = new DOMRectReadOnly(caret.left, caret.top, caret.right - caret.left, caret.bottom - caret.top);
-    const list = this.editor?.spec.completionList;
-    if (list !== undefined && active.status === 'ready' && active.items.length)
-      this.show(list, `${list}-${active.selectedIndex}`);
-    else this.hide();
     const previous = this.published;
     const value = previous?.value;
+    const pending = active.status === 'pending';
     if (previous?.requestId === active.requestId && value?.items === active.items &&
-        value.pending === (active.status === 'pending') && value.active === active.selectedIndex &&
+        value.pending === pending && value.active === active.selectedIndex &&
         value.rect.x === rect.x && value.rect.y === rect.y && value.rect.width === rect.width &&
-      value.rect.height === rect.height) return;
-    this.published = { requestId: active.requestId, value: Object.freeze(active.source.publish({
-      query: active.context.query, pending: active.status === 'pending', items: active.items,
-      active: active.selectedIndex, rect,
-    }, active.context)) };
-    this.changed();
+        value.rect.height === rect.height) return;
+    const requestId = active.requestId;
+    const items = active.items;
+    const actions: CompletionActions = {
+      accept: index => this.accept(requestId, items, pending, index),
+      activate: index => this.activate(requestId, items, pending, index),
+      dismiss: () => this.dismiss(requestId),
+    };
+    const published = Object.freeze(active.source.publish({
+      query: active.context.query, pending, items, active: active.selectedIndex, rect,
+    }, active.context, actions));
+    this.published = { requestId, value: published };
+    this.changed(published);
   }
 
-  private show(list: string, option: string): void {
-    this.previousARIA ??= ['aria-controls', 'aria-autocomplete', 'aria-activedescendant']
-      .map(name => [name, this.view.dom.getAttribute(name)] as const);
-    this.view.dom.setAttribute('aria-controls', [this.previousARIA[0]![1], list].filter(Boolean).join(' '));
-    this.view.dom.setAttribute('aria-autocomplete', 'list');
-    this.view.dom.setAttribute('aria-activedescendant', option);
+  private accept(
+    requestId: number,
+    items: readonly KagamiMD.CompletionCandidate[],
+    pending: boolean,
+    index?: number,
+  ): boolean {
+    if (this.destroyed || !this.editor || this.editor.isDestroyed() || pending || !available(this.view)) return false;
+    const active = completionKey.getState(this.view.state)?.active;
+    if (!active || active.requestId !== requestId || active.items !== items || active.status !== 'ready') return false;
+    return (index === undefined || Number.isInteger(index)) &&
+      this.editor.state.runCommand(acceptCompletion(typeof index === 'number' ? index : undefined));
   }
 
-  private hide(): void {
-    if (!this.previousARIA) return;
-    for (const [name, value] of this.previousARIA) {
-      if (value === null) this.view.dom.removeAttribute(name);
-      else this.view.dom.setAttribute(name, value);
-    }
-    this.previousARIA = null;
+  private activate(
+    requestId: number,
+    items: readonly KagamiMD.CompletionCandidate[],
+    pending: boolean,
+    index: number,
+  ): boolean {
+    if (this.destroyed || !this.editor || this.editor.isDestroyed() || pending || !available(this.view)) return false;
+    const active = completionKey.getState(this.view.state)?.active;
+    if (!active || active.requestId !== requestId || active.items !== items || active.status !== 'ready') return false;
+    if (!Number.isInteger(index) || index < 0 || index >= active.items.length) return false;
+    return this.editor.state.runCommand((current, dispatch) => {
+      if (active.selectedIndex !== index) {
+        dispatch?.(current.tr.setMeta(completionKey, { kind: 'select', index } satisfies CompletionMeta));
+      }
+      return true;
+    });
   }
 
-  private changed(): void {
-    if (this.editor && !this.editor.isDestroyed())
-      this.editor.updates.fire({ state: this.editor.state, docChanged: false });
+  private dismiss(requestId: number): boolean {
+    if (this.destroyed || !this.editor || this.editor.isDestroyed()) return false;
+    if (completionKey.getState(this.view.state)?.active?.requestId !== requestId) return false;
+    return this.editor.state.runCommand(dismissCompletion);
+  }
+
+  private changed(value: KagamiMD.Completion | null): void {
+    if (this.editor && !this.editor.isDestroyed()) this.editor._onDidChangeCompletion.fire(value);
   }
 }

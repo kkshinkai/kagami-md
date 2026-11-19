@@ -10,18 +10,20 @@
 
 import { Fragment, NodeRange, Slice, type Node, type NodeType, type ResolvedPos } from 'prosemirror-model';
 import { Selection, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
-import { readAnnotation } from '../types/annotations.js';
+import {
+  hasClipboardSlice, isInsideCarriedField, readCarriedTree,
+} from '../types/annotations.js';
 import { alignment, type Alignment } from '../types/schema.js';
-import { unparse } from '../unparse/unparse.js';
+import { defaultUnparseOptions, unparseSlice } from '../unparse/unparse.js';
 import { fieldSource } from '../parse/field.js';
 import { insert, join, remove, replace, split, update, wrap } from '../transform/transform.js';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 
 /** Insert a clipboard slice, preserving the destination's structural ownership. */
 export function paste(state: EditorState, content: Slice, html = ''): Transaction | null {
   const { slice, itemHead } = new PasteContext(state).read(content, html);
   if (!slice.size) return null;
-  const transaction = history.isolate(state.tr);
+  const transaction = isolateHistory(state.tr);
   if (itemHead) insertItems(transaction, slice.content);
   else if (slice.content.content.every(node => node.isInline)) insertInline(transaction, slice);
   else if (slice.openStart || slice.openEnd) replaceSelection(transaction, slice);
@@ -41,15 +43,15 @@ class PasteContext {
   read(slice: Slice, html: string): Insertion {
     if (!html || slice.content.firstChild?.isInline) return { slice, itemHead: false };
     const dom = new globalThis.DOMParser().parseFromString(html, 'text/html').body;
-    const carried = readAnnotation.tree(dom, this.state.schema);
-    if (carried && readAnnotation.insideField(carried.fragment, carried.carrier)) {
+    const carried = readCarriedTree(dom, this.state.schema);
+    if (carried && isInsideCarriedField(carried.fragment, carried.carrier)) {
       let field = slice.content.childCount === 1 ? slice.content.firstChild : null;
       while (field && !field.isTextblock && field.childCount === 1) field = field.firstChild;
       if (field?.isTextblock) return { slice: new Slice(field.content, 0, 0), itemHead: false };
     }
     const matrix = this.matrix(slice.content, dom);
     if (matrix) return matrix;
-    if (readAnnotation.hasSlice(dom)) return { slice, itemHead: false };
+    if (hasClipboardSlice(dom)) return { slice, itemHead: false };
     const selection = this.state.selection;
     const { paragraph, heading } = this.state.schema.nodes;
     if (selection instanceof TextSelection && selection.$from.sameParent(selection.$to) &&
@@ -256,21 +258,19 @@ function singleField(content: Fragment): Node | null {
   return source && !/[\r\n]/.test(source) ? node : null;
 }
 
-export namespace paste {
-  /** Plain MIME text is already source. Only its line endings are normalized. */
-  export function text(value: string, context: ResolvedPos): Slice {
-    const normalized = value.replace(/\r\n?/g, '\n');
-    if (!normalized) return Slice.empty;
-    return new Slice(Fragment.from(context.doc.type.schema.text(normalized)), 0, 0);
-  }
+/** Plain MIME text is already source. Only its line endings are normalized. */
+export function plainTextSlice(value: string, context: ResolvedPos): Slice {
+  const normalized = value.replace(/\r\n?/g, '\n');
+  if (!normalized) return Slice.empty;
+  return new Slice(Fragment.from(context.doc.type.schema.text(normalized)), 0, 0);
+}
 
-  /** Read ordinary clipboard blocks as a single cell's inline content. Each field
-   * keeps its content and starts on a new line; a leaf block contributes its source. */
-  export function cell(slice: Slice, context: ResolvedPos): Fragment {
-    const reader = new CellReader(context);
-    slice.content.forEach(node => reader.read(node));
-    return Fragment.fromArray(reader.content);
-  }
+/** Read ordinary clipboard blocks as a single cell's inline content. Each field
+ * keeps its content and starts on a new line; a leaf block contributes its source. */
+export function cellPasteContent(slice: Slice, context: ResolvedPos): Fragment {
+  const reader = new CellReader(context);
+  slice.content.forEach(node => reader.read(node));
+  return Fragment.fromArray(reader.content);
 }
 
 /** The destination and accumulated fields of one clipboard-to-cell reading. */
@@ -288,7 +288,7 @@ class CellReader {
       this.content.push(...node.content.content);
     } else if (node.isLeaf) {
       // A leaf block has no edge mark and is never left out, so the options do not reach it.
-      const text = unparse.slice(new Slice(Fragment.from(node), 0, 0), this.context, unparse.defaults);
+      const text = unparseSlice(new Slice(Fragment.from(node), 0, 0), this.context, defaultUnparseOptions);
       if (!text) return;
       this.startField();
       this.content.push(this.context.doc.type.schema.text(text));

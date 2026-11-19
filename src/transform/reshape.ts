@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { bindings } from '../state/bindings.js';
+import { BindingState } from '../state/bindings.js';
 import { Fragment, Slice, type Node, type NodeType } from 'prosemirror-model';
 import { ReplaceAroundStep, type Transform } from 'prosemirror-transform';
 import { editorSpelling, editorType } from '../parse/tree.js';
@@ -282,7 +282,7 @@ function applyReadings(tr: Transform, position: number, shapes: readonly Shape[]
       case 'text': {
         const reading = authored.get(shape);
         if (reading) applyContent(tr, position, node, reading.content);
-        if (shape.references) bindings.record(tr, position, shape.references);
+        if (shape.references) BindingState.record(tr, position, shape.references);
         break;
       }
     }

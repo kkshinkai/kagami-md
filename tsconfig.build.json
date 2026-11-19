@@ -10,8 +10,7 @@
     "rootDir": "src",
     "outDir": "dist/types",
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "customConditions": []
+    "noUnusedParameters": true
   },
   "include": [
     "src/index.ts"

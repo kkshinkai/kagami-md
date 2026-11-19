@@ -14,9 +14,6 @@ npm install kagami-md@alpha
 
 Kagami is not ready to be used. Releases are `0.0.0-alpha.N`, published under the `alpha` tag.
 
-`@codemirror/commands`, `@codemirror/state` and `@codemirror/view` are optional
-peer dependencies.
-
 ## Use
 
 ```ts
@@ -25,12 +22,17 @@ import 'kagami-md/styles.css';
 
 const editor = KagamiMD.create({ parent: document.body, doc: '# Hello\n' });
 editor.onDidUpdate(update => {
-  if (update.docChanged) console.log(update.state.doc);
+  if (update.docChanged) console.log(update.state.getMarkdown());
 });
 ```
 
 The package has one entry point, `kagami-md`, and one stylesheet,
 `kagami-md/styles.css`. Release the editor with `editor.destroy()`.
+
+Text selections use the browser's native highlight by default. Pass
+`drawnSelection: true` to `KagamiMD.create` to draw them with Kagami instead.
+This option does not affect block selection rendering. The caller chooses the
+behavior; the library does not detect the platform.
 
 ## License
 
@@ -59,9 +61,12 @@ header names its copyright holders and licenses in
 - part of the paste handling, from
   [prosemirror-view](https://github.com/ProseMirror/prosemirror-view) by Marijn
   Haverbeke (MIT);
+- mobile platform detection in the playground, from
+  [Wordgard](https://code.haverbeke.berlin/wordgard/wordgard) by Marijn
+  Haverbeke (MIT);
 - the icons, from [Lucide](https://lucide.dev) (ISC) and Feather (MIT).
 
 The built package bundles `prosemirror-view`, `prosemirror-history` and
 `prosemirror-tables`, with patches in [patches](patches), and its stylesheet
-includes KaTeX and the Open Sans font. Their licenses are listed in
+includes KaTeX. Their licenses are listed in
 `dist/THIRD-PARTY-LICENSES.md`.

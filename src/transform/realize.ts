@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Bindings, CalloutSyntax, parseBlocks, type BlockSyntax } from '../syntax/index.js';
+import { CalloutSyntax, Parser, type BlockSyntax } from '../syntax/index.js';
 import type { Node } from 'prosemirror-model';
 import type { Transform } from 'prosemirror-transform';
 import { fieldSource } from '../parse/field.js';
@@ -13,6 +13,8 @@ import { looseList, setAttributes } from './frames.js';
 import { readingShapes } from './reading.js';
 import { reshapeBlocks } from './reshape.js';
 import type { PositionMapping, Shape } from './transform.js';
+
+const calloutParser = new Parser({ target: 'editor' });
 
 /**
  * Replace the textblock at a position by the blocks its text reads as: what Pending settles and
@@ -70,7 +72,7 @@ export function realizeCalloutTitle(tr: Transform, position: number): void {
   const node = tr.doc.resolve(position + 1).node(-1);
   const gap: string = node.attrs.spelling?.whitespaceAfterDeclaration ?? '';
   const head = `> [!${node.attrs.calloutType.toUpperCase()}]`;
-  const parsed = parseBlocks(head + gap + text, { target: 'editor' }, Bindings.none)[0];
+  const parsed = calloutParser.parseBlocks(head + gap + text)[0];
   if (!(parsed instanceof CalloutSyntax)) throw new RangeError('A callout title must keep its declaration');
   const whitespace = parsed.spelling.whitespaceAfterDeclaration;
   tr.delete(position + 1, position + 1 + whitespace.length - gap.length);

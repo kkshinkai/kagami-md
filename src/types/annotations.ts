@@ -8,8 +8,8 @@
 import type { DOMNode } from '../editor/dom.js';
 import {
   BackslashEscapeSyntax, CharacterReferenceSyntax, FootnoteReferenceSyntax,
-  TagSyntax, WikilinkSyntax, transduce,
-  type Frontier, type Syntax,
+  TagSyntax, WikilinkSyntax,
+  type Frontier, type Parser, type Syntax,
 } from '../syntax/index.js';
 import { Fragment, type Schema, type MarkType } from 'prosemirror-model';
 
@@ -21,13 +21,32 @@ export const annotatedBlockKinds: ReadonlySet<string> = new Set([
   'callout', 'linkReferenceDefinition', 'footnoteDefinition',
 ]);
 
+export type AnnotationMode = 'atxHeading' | 'tableCell';
+type AnnotationKind = 'footnoteLabel' | 'wikilink' | 'tag';
+export type AnnotationValue = {
+  from: number;
+  to: number;
+  source: string;
+  display: string;
+} & ({ kind: 'footnoteLabel'; identifier: string } | { kind: 'wikilink' | 'tag' });
+
+/** Source and structure carried beside rendered HTML. */
+export interface CarriedTree {
+  fragment: Fragment;
+  carrier: globalThis.Element;
+}
+
 /** Read complete source annotations, or find the complete annotations in copied inline text. */
 export function readAnnotation(
-  source: string, kind: string, mode: readAnnotation.Mode = 'atxHeading', identifier?: string,
+  source: string, kind: string, parser: Parser, mode: AnnotationMode = 'atxHeading',
+  identifier?: string,
 ): Syntax | undefined {
-  const reading = transduce(source, {
-    phrasing: mode, firstInListItem: false, firstInBlockQuote: false,
-  }, { definition: () => undefined, footnote: label => label === identifier });
+  const reading = parser.transduce(source, {
+    bindings: identifier === undefined ? undefined : { definitions: new Map(), footnotes: new Set([identifier]) },
+    phrasing: mode,
+    firstInListItem: false,
+    firstInBlockQuote: false,
+  });
   if (reading.kind !== 'inline' || reading.children.length !== 1) return;
   const node = reading.children[0]!;
   if (node.start !== 0 || node.end !== source.length || annotationKind(node) !== kind) return;
@@ -35,62 +54,46 @@ export function readAnnotation(
   return node;
 }
 
-export namespace readAnnotation {
-  export type Mode = 'atxHeading' | 'tableCell';
-  export type Kind = 'footnoteLabel' | 'wikilink' | 'tag';
-  export type Value = {
-    from: number;
-    to: number;
-    source: string;
-    display: string;
-  } & ({ kind: 'footnoteLabel'; identifier: string } | { kind: 'wikilink' | 'tag' });
+/** A copied mark may be truncated. The reader proves a complete construct in the selected
+ * characters; the original frontier marks prove that it had semantic presentation there. */
+export function readFragmentAnnotations(content: Fragment, parser: Parser,
+  mode: AnnotationMode): Map<number, AnnotationValue> {
+  return new AnnotationContext(content, parser, mode).read();
+}
 
-  /** A copied mark may be truncated. The reader proves a complete construct in the selected
-   * characters; the original frontier marks prove that it had semantic presentation there. */
-  export function fragment(content: Fragment, mode: Mode): Map<number, Value> {
-    return new AnnotationContext(content, mode).read();
+/** A tree from an incompatible schema falls back to the HTML beside it. */
+export function readCarriedTree(dom: DOMNode, schema: Schema): CarriedTree | null {
+  if (dom.nodeType !== 1 && dom.nodeType !== 11) return null;
+  let carrier = dom.nodeType === 1
+    ? (dom as globalThis.Element).closest(`[${treeAttribute}]`) : null;
+  if (!carrier) carrier = (dom as globalThis.Element | DocumentFragment).querySelector(`[${treeAttribute}]`);
+  const json = carrier?.getAttribute(treeAttribute);
+  if (!carrier || !json) return null;
+  try {
+    const fragment = Fragment.fromJSON(schema, JSON.parse(json));
+    fragment.forEach(node => node.check());
+    return { fragment, carrier };
+  } catch {
+    return null;
   }
+}
 
-  /** Source and structure carried beside rendered HTML. */
-  export interface CarriedTree {
-    fragment: Fragment;
-    carrier: globalThis.Element;
-  }
+/** Complete formula selections keep their defining frame. */
+export function isInsideCarriedField(fragment: Fragment, carrier: globalThis.Element): boolean {
+  if (fragment.childCount !== 1 || !fragment.firstChild!.isTextblock) return false;
+  if (carrier.getAttribute('data-math-display') === 'block') return false;
+  const depths = /^(\d+) (\d+)/.exec(carrier.closest('[data-pm-slice]')?.getAttribute('data-pm-slice') ?? '');
+  return depths !== null && Number(depths[1]) > 0 && Number(depths[2]) > 0;
+}
 
-  /** A tree from an incompatible schema falls back to the HTML beside it. */
-  export function tree(dom: DOMNode, schema: Schema): CarriedTree | null {
-    if (dom.nodeType !== 1 && dom.nodeType !== 11) return null;
-    let carrier = dom.nodeType === 1
-      ? (dom as globalThis.Element).closest(`[${treeAttribute}]`) : null;
-    if (!carrier) carrier = (dom as globalThis.Element | DocumentFragment).querySelector(`[${treeAttribute}]`);
-    const json = carrier?.getAttribute(treeAttribute);
-    if (!carrier || !json) return null;
-    try {
-      const fragment = Fragment.fromJSON(schema, JSON.parse(json));
-      fragment.forEach(node => node.check());
-      return { fragment, carrier };
-    } catch {
-      return null;
-    }
-  }
-
-  /** Complete formula selections keep their defining frame. */
-  export function insideField(fragment: Fragment, carrier: globalThis.Element): boolean {
-    if (fragment.childCount !== 1 || !fragment.firstChild!.isTextblock) return false;
-    if (carrier.getAttribute('data-math-display') === 'block') return false;
-    const depths = /^(\d+) (\d+)/.exec(carrier.closest('[data-pm-slice]')?.getAttribute('data-pm-slice') ?? '');
-    return depths !== null && Number(depths[1]) > 0 && Number(depths[2]) > 0;
-  }
-
-  /** Recognize PM's explicit clipboard envelope, never infer a copied slice from its node types.
-   * The native view still owns parsing/restoring the declared depths and ancestor context. */
-  export function hasSlice(dom: DOMNode): boolean {
-    if (dom.nodeType !== 1) return false;
-    const element = dom as globalThis.Element;
-    const carrier = element.closest('[data-pm-slice]') ?? element.querySelector('[data-pm-slice]');
-    const metadata = carrier?.getAttribute('data-pm-slice');
-    return Boolean(metadata && /^(\d+) (\d+)(?: -(\d+))? (.*)/.test(metadata));
-  }
+/** Recognize PM's explicit clipboard envelope, never infer a copied slice from its node types.
+ * The native view still owns parsing/restoring the declared depths and ancestor context. */
+export function hasClipboardSlice(dom: DOMNode): boolean {
+  if (dom.nodeType !== 1) return false;
+  const element = dom as globalThis.Element;
+  const carrier = element.closest('[data-pm-slice]') ?? element.querySelector('[data-pm-slice]');
+  const metadata = carrier?.getAttribute('data-pm-slice');
+  return Boolean(metadata && /^(\d+) (\d+)(?: -(\d+))? (.*)/.test(metadata));
 }
 
 interface Piece {
@@ -105,10 +108,11 @@ class AnnotationContext {
   pieces: Piece[] = [];
   footnotes = new Set<string>();
 
-  constructor(readonly content: Fragment, readonly mode: readAnnotation.Mode) {}
+  constructor(readonly content: Fragment, readonly parser: Parser,
+    readonly mode: AnnotationMode) {}
 
-  read(): Map<number, readAnnotation.Value> {
-    const result = new Map<number, readAnnotation.Value>();
+  read(): Map<number, AnnotationValue> {
+    const result = new Map<number, AnnotationValue>();
     if (!this.content.firstChild?.isInline) return result;
     this.content.forEach((node, offset) => {
       this.source += node.isText ? node.text! : '\n';
@@ -117,9 +121,12 @@ class AnnotationContext {
       for (const mark of node.marks)
         if (mark.type === node.type.schema.marks.footnoteReference) this.footnotes.add(mark.attrs.identifier);
     });
-    const reading = transduce(this.source, {
-      phrasing: this.mode, firstInListItem: false, firstInBlockQuote: false,
-    }, { definition: () => undefined, footnote: label => this.footnotes.has(label) });
+    const reading = this.parser.transduce(this.source, {
+      bindings: { definitions: new Map(), footnotes: this.footnotes },
+      phrasing: this.mode,
+      firstInListItem: false,
+      firstInBlockQuote: false,
+    });
     if (reading.kind !== 'inline') return result;
     const marks = this.content.firstChild.type.schema.marks;
     for (const node of new Set(reading.frontier.flatMap(piece => piece.nodes))) {
@@ -165,7 +172,7 @@ class AnnotationContext {
   }
 }
 
-function annotationKind(node: Syntax): readAnnotation.Kind | null {
+function annotationKind(node: Syntax): AnnotationKind | null {
   if (node instanceof FootnoteReferenceSyntax) return 'footnoteLabel';
   if (node instanceof WikilinkSyntax || node instanceof TagSyntax) return node.type;
   return null;

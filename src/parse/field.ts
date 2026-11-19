@@ -6,16 +6,15 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { Node, ResolvedPos } from 'prosemirror-model';
-import {
-  transduce, type Bindings, type FrontMatterSpelling, type Transduction, type TransduceOptions,
-} from '../syntax/index.js';
+import type { Bindings, FrontMatterSpelling, Parser, Transduction } from '../syntax/index.js';
 import { pendingMarks } from '../types/schema.js';
 
 /** Read a field in its grammatical context. */
-export function readField(position: ResolvedPos, bindings: Bindings, settle = false): Transduction {
+export function readField(position: ResolvedPos, parser: Parser,
+  bindings: Bindings, settle = false): Transduction {
   const parent = position.depth > 1 ? position.node(-1) : null;
   const options = fieldOptions(position.parent, parent, position.index(-1));
-  return transduce(fieldSource(position.parent), { ...options, settle }, bindings);
+  return parser.transduce(fieldSource(position.parent), { ...options, bindings, settle });
 }
 
 /** Source as edited, with a literal line ending for each line-ending node. */
@@ -31,7 +30,7 @@ export function frontMatterSource(node: Node): string {
 }
 
 /** The field reader and the two contexts where its opening can consume a marker. */
-export function fieldOptions(node: Node, parent: Node | null, index: number): TransduceOptions {
+export function fieldOptions(node: Node, parent: Node | null, index: number): Parser.TransduceOptions {
   const types = node.type.schema.nodes;
   if (node.type === types.paragraph) return {
     phrasing: 'paragraph',
@@ -54,11 +53,11 @@ export function hasPending(node: Node): boolean {
 }
 
 /** An imported lazy line remains a paragraph until its writing unit is repaired. */
-export function lazyField(position: ResolvedPos, bindings: Bindings): boolean {
+export function lazyField(position: ResolvedPos, parser: Parser, bindings: Bindings): boolean {
   const node = position.parent;
   if (node.type !== node.type.schema.nodes.paragraph || position.depth < 2 ||
       !fieldSource(node).includes('\n') || hasPending(node)) return false;
-  const result = readField(position, bindings);
+  const result = readField(position, parser, bindings);
   return result.kind === 'pending' &&
     (result.pending.type === 'pendingSetextUnderline' || result.pending.type === 'pendingTable');
 }

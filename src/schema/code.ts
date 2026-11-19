@@ -5,17 +5,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { isCodeLanguage } from '../syntax/index.js';
 import type { Node } from 'prosemirror-model';
-import { Plugin, PluginKey, TextSelection, type Command, type EditorState, type PluginView } from 'prosemirror-state';
+import {
+  Plugin, PluginKey, TextSelection, type Command as PMCommand, type EditorState, type PluginView,
+} from 'prosemirror-state';
 import { Decoration, DecorationSet, type EditorView, type ViewMutationRecord } from 'prosemirror-view';
 import type { HighlighterCore } from 'shiki/core';
-import * as command from '../command/command.js';
+import { ControlHold } from '../editor/hold.js';
+import type { EditorLoc } from '../source/index.js';
 import { update } from '../transform/transform.js';
-import { decorateBlocks } from '../editor/decoration.js';
-import { findEditor, type DOMNode } from '../editor/dom.js';
-import { input } from '../editor/input.js';
+import { updateBlockDecorations, type decorateBlocks } from '../editor/decoration.js';
+import type { DOMNode } from '../editor/dom.js';
+import type { KagamiMD } from '../editor/editor.js';
+import { routeHistoryKey } from '../editor/input.js';
+import { PluginDesc } from '../editor/plugin.js';
 import { registerBlockView, type BlockView } from '../editor/blockview.js';
 import { canRunCommand, compositionState } from '../state/input.js';
 import { schema } from '../types/schema.js';
@@ -52,11 +57,20 @@ const grammars = [
 ];
 
 /** Code bodies, their language label, syntax colors, and isolated indentation edits. */
-export function codeBlock(): Plugin[] {
-  return [codeBlock.state(), codeBlock.view()];
+export function codeBlock(): PluginDesc[] {
+  return [
+    PluginDesc.viewState(codeHighlightState),
+    PluginDesc.view(editor => codeBlockView(undefined, editor)),
+  ];
 }
 
-export namespace codeBlock {
+/** One view's lease on syntax highlighting resources. */
+export interface CodeHighlighter {
+  highlight(code: string, language: string | null): Promise<readonly CodeHighlighter.Token[]>;
+  dispose(): void;
+}
+
+export namespace CodeHighlighter {
   /** A highlighted range, measured in UTF-16 offsets in the code body. */
   export interface Token {
     readonly from: number;
@@ -64,138 +78,8 @@ export namespace codeBlock {
     readonly style: string;
   }
 
-  /** One view's lease on syntax highlighting resources. */
-  export interface Highlighter {
-    highlight(code: string, language: string | null): Promise<readonly Token[]>;
-    dispose(): void;
-  }
-
-  /** Completed colors are state, so attaching another view does not discard them. */
-  export function state(): Plugin<Highlights> {
-    return new Plugin<Highlights>({
-      key: highlightKey,
-      state: {
-        init() { return { entries: [], decorations: DecorationSet.empty }; },
-        apply(transaction, value) {
-          const change = transaction.getMeta(highlightKey) as HighlightChange | undefined;
-          const refresh: decorateBlocks.Range[] = [];
-          let entries = value.entries;
-          if (change?.kind === 'highlight' && change.doc === transaction.doc) {
-            entries = change.entries;
-            const complete = new Set(value.entries.map(entry => entry.node));
-            for (const block of change.blocks) {
-              if (complete.has(block.node)) continue;
-              refresh.push({ from: block.position, to: block.position + block.node.nodeSize - 1 });
-            }
-          } else if (!transaction.docChanged) return value;
-          const colors = new CodeColors(entries);
-          const decorations = decorateBlocks.update(value.decorations, transaction,
-            (node, position) => colors.draw(node, position), refresh, node => colors.clear(node));
-          return { entries: entries.filter(entry => !colors.removed.has(entry.node)), decorations };
-        },
-      },
-      props: { decorations(state) { return highlightKey.getState(state)!.decorations; } },
-    });
-  }
-
-  /** Each native view owns its code DOM and asynchronous highlighting work. */
-  export function view(highlighter: () => Highlighter = codeBlock.createHighlighter): Plugin {
-    const labels = new Set<CodeView>();
-    return new Plugin<command.Command.RequestState>({
-      key: CodeBlock.chooseLanguage.key,
-      state: {
-        init: () => ({ hold(view, position) {
-          for (const label of labels) {
-            if (label.view !== view) continue;
-            const request = command.keepRequest(label.request(), position,
-              () => labels.has(label) && !view.isDestroyed);
-            if (request) return request;
-          }
-          return null;
-        } }),
-        apply: (_tr, value) => value,
-      },
-      props: { nodeViews: { codeBlock(node, view, getPos) {
-        const label = new CodeView(node, view, getPos, () => labels.delete(label));
-        labels.add(label);
-        return registerBlockView(node, label);
-      } } },
-      view(view) {
-        const colors = new HighlightView(view, highlighter(), labels);
-        return {
-          update() {
-            for (const label of labels) if (label.view === view) label.sync();
-            colors.update();
-          },
-          destroy() { colors.destroy(); },
-        };
-      },
-    });
-  }
-
-  /** Choose a language and let structure assign the fence its meaning needs. */
-  export function setLanguage(position: number, language: string | null): Command {
-    return (state, dispatch, view) => {
-      if (view?.editable === false || position < 0 || position >= state.doc.content.size) return false;
-      const block = state.doc.nodeAt(position);
-      if (block?.type !== schema.nodes.codeBlock || language !== null && !isCodeLanguage(language)) return false;
-      // Markdown has no metadata slot without a preceding language. Preserve metadata by spelling
-      // the plain-text choice explicitly, so reload cannot reinterpret metadata as the language.
-      const value = language === null && block.attrs.meta ? 'text' : language;
-      if (block.attrs.language === value || !dispatch) return true;
-      const transaction = history.isolate(state.tr);
-      update(transaction, position, { language: value });
-      dispatch(transaction);
-      return true;
-    };
-  }
-
-  /** Tab edits the touched lines. A range ending at a line start excludes that line. */
-  export function indent(direction: 'indent' | 'dedent'): Command {
-    return (state, dispatch, view) => {
-      if (view?.editable === false) return false;
-      const selection = codeSelection(state);
-      if (!selection) return false;
-      if (!dispatch) return true;
-      const from = selection.$from;
-      const text = from.parent.textContent;
-      const last = lineStart(text, selection.empty ? selection.$to.parentOffset : selection.$to.parentOffset - 1);
-      const starts: number[] = [];
-      for (let start = lineStart(text, from.parentOffset); start <= last;) {
-        starts.push(start);
-        if (start === last) break;
-        start = text.indexOf('\n', start) + 1;
-      }
-      const transaction = state.tr;
-      for (const start of starts.reverse()) {
-        if (direction === 'indent') {
-          const offset = selection.empty && /^[ \t]*$/.test(text.slice(start, from.parentOffset))
-            ? from.parentOffset : start;
-          transaction.insertText('  ', from.start() + offset, from.start() + offset);
-        } else {
-          const length = indentation(text, start);
-          if (length) transaction.insertText('', from.start() + start, from.start() + start + length);
-        }
-      }
-      if (transaction.docChanged) dispatch(history.isolate(transaction).scrollIntoView());
-      return true;
-    };
-  }
-
-  /** Enter copies only the indentation before the first endpoint of the selection. */
-  export const enterInCode: Command = (state, dispatch, view) => {
-    if (view?.editable === false) return false;
-    const selection = codeSelection(state);
-    if (!selection) return false;
-    const from = selection.$from;
-    const text = from.parent.textContent;
-    const prefix = text.slice(lineStart(text, from.parentOffset), from.parentOffset);
-    if (dispatch) dispatch(state.tr.insertText('\n' + /^[ \t]*/.exec(prefix)![0]).scrollIntoView());
-    return true;
-  };
-
   /** Share grammar resources across live editors, releasing them with the last lease. */
-  export function createHighlighter(): Highlighter {
+  export function create(): CodeHighlighter {
     const owner = shared ??= { highlighter: new ShikiHighlighter(), references: 0 };
     owner.references++;
     let released = false;
@@ -217,65 +101,161 @@ export namespace codeBlock {
   }
 }
 
-/** The language of a code block. */
-export namespace CodeBlock {
-  /** One language label offered by the code-block language command. */
-  export interface LanguageChoice {
-    readonly value: string;
-    readonly label: string;
-  }
-
-  /** Raised when the language label is pressed; the host answers with setLanguage. */
-  export const chooseLanguage = command.requestCommand<{
-    readonly pos: number;
-    readonly rect: DOMRectReadOnly;
-    readonly language: string;
-  }>();
-
-  /** Set the named block's language, or that of the block containing the selection. */
-  export const setLanguage: command.Command.Pure<{ readonly pos?: number; readonly language: string }> = ({ state },
-    value) => {
-    const position = command.findTarget(state.editorState, value.pos, schema.nodes.codeBlock);
-    if (position === undefined) return false;
-    return state.runCommand(codeBlock.setLanguage(position, value.language || null));
-  };
-
-  /** The highlighted languages, with plain text first; other fence labels remain valid. */
-  export const languages: readonly LanguageChoice[] = Object.freeze([
-    { value: '', label: 'Plain text' },
-    ...[...grammars].sort((a, b) => a.label.localeCompare(b.label))
-      .map(grammar => ({ value: grammar.id, label: grammar.label })),
-  ].map(value => Object.freeze(value)));
+/** Highlighted tokens stored for one code block node. */
+export interface CodeHighlightEntry {
+  readonly node: Node;
+  readonly tokens: readonly CodeHighlighter.Token[];
 }
+
+/** Syntax-highlighting plugin state for the mounted view's code blocks. */
+export interface CodeHighlights {
+  readonly entries: readonly CodeHighlightEntry[];
+  readonly decorations: DecorationSet;
+}
+
+/** Completed colors for the mounted view's code blocks. */
+export function codeHighlightState(): Plugin<CodeHighlights> {
+  return new Plugin<CodeHighlights>({
+    key: highlightKey,
+    state: {
+      init() { return { entries: [], decorations: DecorationSet.empty }; },
+      apply(transaction, value) {
+        const change = transaction.getMeta(highlightKey) as HighlightChange | undefined;
+        const refresh: decorateBlocks.Range[] = [];
+        let entries = value.entries;
+        if (change?.kind === 'highlight' && change.doc === transaction.doc) {
+          entries = change.entries;
+          const complete = new Set(value.entries.map(entry => entry.node));
+          for (const block of change.blocks) {
+            if (complete.has(block.node)) continue;
+            refresh.push({ from: block.position, to: block.position + block.node.nodeSize - 1 });
+          }
+        } else if (!transaction.docChanged) return value;
+        const colors = new CodeColors(entries);
+        const decorations = updateBlockDecorations(value.decorations, transaction,
+          (node, position) => colors.draw(node, position), refresh, node => colors.clear(node));
+        return { entries: entries.filter(entry => !colors.removed.has(entry.node)), decorations };
+      },
+    },
+    props: { decorations(state) { return highlightKey.getState(state)!.decorations; } },
+  });
+}
+
+/** Each native view owns its code DOM and asynchronous highlighting work. */
+export function codeBlockView(
+  highlighter: () => CodeHighlighter = CodeHighlighter.create,
+  editor?: KagamiMD,
+): Plugin {
+  const labels = new Set<CodeView>();
+  return new Plugin({
+    props: { nodeViews: { codeBlock(node, view, getPos) {
+      const label = new CodeView(node, view, getPos, () => labels.delete(label), editor);
+      labels.add(label);
+      return registerBlockView(node, label);
+    } } },
+    view(view) {
+      const colors = new HighlightView(view, highlighter(), labels);
+      return {
+        update() {
+          for (const label of labels) if (label.view === view) label.sync();
+          colors.update();
+        },
+        destroy() {
+          colors.destroy();
+        },
+      };
+    },
+  });
+}
+
+/** Choose a language and let structure assign the fence its meaning needs. */
+export function setCodeLanguage(position: number, language: string | null): PMCommand {
+  return (state, dispatch, view) => {
+    if (view?.editable === false || position < 0 || position >= state.doc.content.size) return false;
+    const block = state.doc.nodeAt(position);
+    if (block?.type !== schema.nodes.codeBlock || language !== null && !isCodeLanguage(language)) return false;
+    // Markdown has no metadata slot without a preceding language. Preserve metadata by spelling
+    // the plain-text choice explicitly, so reload cannot reinterpret metadata as the language.
+    const value = language === null && block.attrs.meta ? 'text' : language;
+    if (block.attrs.language === value || !dispatch) return true;
+    const transaction = isolateHistory(state.tr);
+    update(transaction, position, { language: value });
+    dispatch(transaction);
+    return true;
+  };
+}
+
+/** Tab edits the touched lines. A range ending at a line start excludes that line. */
+export function indentCodeBlock(direction: 'indent' | 'dedent'): PMCommand {
+  return (state, dispatch, view) => {
+    if (view?.editable === false) return false;
+    const selection = codeSelection(state);
+    if (!selection) return false;
+    if (!dispatch) return true;
+    const from = selection.$from;
+    const text = from.parent.textContent;
+    const last = lineStart(text, selection.empty ? selection.$to.parentOffset : selection.$to.parentOffset - 1);
+    const starts: number[] = [];
+    for (let start = lineStart(text, from.parentOffset); start <= last;) {
+      starts.push(start);
+      if (start === last) break;
+      start = text.indexOf('\n', start) + 1;
+    }
+    const transaction = state.tr;
+    for (const start of starts.reverse()) {
+      if (direction === 'indent') {
+        const offset = selection.empty && /^[ \t]*$/.test(text.slice(start, from.parentOffset))
+          ? from.parentOffset : start;
+        transaction.insertText('  ', from.start() + offset, from.start() + offset);
+      } else {
+        const length = indentation(text, start);
+        if (length) transaction.insertText('', from.start() + start, from.start() + start + length);
+      }
+    }
+    if (transaction.docChanged) dispatch(isolateHistory(transaction).scrollIntoView());
+    return true;
+  };
+}
+
+/** Enter copies only the indentation before the first endpoint of the selection. */
+export const enterInCode: PMCommand = (state, dispatch, view) => {
+  if (view?.editable === false) return false;
+  const selection = codeSelection(state);
+  if (!selection) return false;
+  const from = selection.$from;
+  const text = from.parent.textContent;
+  const prefix = text.slice(lineStart(text, from.parentOffset), from.parentOffset);
+  if (dispatch) dispatch(state.tr.insertText('\n' + /^[ \t]*/.exec(prefix)![0]).scrollIntoView());
+  return true;
+};
+
+/** The highlighted languages, with plain text first; other fence labels remain valid. */
+export const codeBlockLanguages: readonly KagamiMD.CodeBlockLanguageChoice[] = Object.freeze([
+  { value: '', label: 'Plain text' },
+  ...[...grammars].sort((a, b) => a.label.localeCompare(b.label))
+    .map(grammar => ({ value: grammar.id, label: grammar.label })),
+].map(value => Object.freeze(value)));
 
 interface Code {
   readonly node: Node;
   readonly position: number;
 }
-interface Highlight {
-  readonly node: Node;
-  readonly tokens: readonly codeBlock.Token[];
-}
-interface Highlights {
-  readonly entries: readonly Highlight[];
-  readonly decorations: DecorationSet;
-}
 interface HighlightChange {
   readonly kind: 'highlight';
   readonly doc: Node;
   readonly blocks: readonly Code[];
-  readonly entries: readonly Highlight[];
+  readonly entries: readonly CodeHighlightEntry[];
 };
 interface Request {
   readonly node: Node;
-  readonly result: Promise<Highlight>;
+  readonly result: Promise<CodeHighlightEntry>;
 }
 interface SharedHighlighter {
-  readonly highlighter: codeBlock.Highlighter;
+  readonly highlighter: CodeHighlighter;
   references: number;
 }
 
-const highlightKey = new PluginKey<Highlights>('code-block');
+const highlightKey = new PluginKey<CodeHighlights>('code-block');
 let shared: SharedHighlighter | undefined;
 
 function codeSelection(state: EditorState): TextSelection | null {
@@ -297,9 +277,9 @@ function indentation(text: string, start: number): number {
 
 class CodeColors {
   readonly removed = new Set<Node>();
-  private readonly known: ReadonlyMap<Node, Highlight>;
+  private readonly known: ReadonlyMap<Node, CodeHighlightEntry>;
 
-  constructor(entries: readonly Highlight[]) {
+  constructor(entries: readonly CodeHighlightEntry[]) {
     this.known = new Map(entries.map(entry => [entry.node, entry]));
   }
 
@@ -332,7 +312,7 @@ class HighlightView implements PluginView {
   private doc: Node | undefined;
   private composing = false;
 
-  constructor(readonly view: EditorView, readonly highlighter: codeBlock.Highlighter,
+  constructor(readonly view: EditorView, readonly highlighter: CodeHighlighter,
     readonly labels: ReadonlySet<CodeView>) {
     view.dom.addEventListener('compositionstart', this.start);
     view.dom.addEventListener('compositionend', this.end);
@@ -371,7 +351,7 @@ class HighlightView implements PluginView {
     });
   }
 
-  private request(node: Node): Promise<Highlight> {
+  private request(node: Node): Promise<CodeHighlightEntry> {
     const known = this.pending.find(request => request.node === node);
     if (known) return known.result;
     const result = this.highlighter.highlight(node.textContent, node.attrs.language)
@@ -405,9 +385,11 @@ class CodeView implements BlockView {
   private readonly button: HTMLButtonElement;
   private readonly label: HTMLSpanElement;
   private readonly pre: HTMLPreElement;
+  private readonly controlHold: ControlHold;
+  private destroyed = false;
 
   constructor(private node: Node, readonly view: EditorView,
-    readonly getPos: () => number | undefined, private readonly remove: () => void) {
+    readonly getPos: () => number | undefined, private readonly remove: () => void, editor?: KagamiMD) {
     const document = view.dom.ownerDocument;
     this.dom = document.createElement('div');
     this.dom.className = 'md-code-block';
@@ -420,15 +402,34 @@ class CodeView implements BlockView {
     this.button.setAttribute('aria-label', 'Code block language');
     this.label = this.button.appendChild(document.createElement('span'));
     this.button.insertAdjacentHTML('beforeend', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>');
+    this.controlHold = new ControlHold({
+      element: () => this.button,
+      pos: this.getPos,
+      held: value => {
+        if (value) this.button.setAttribute('aria-expanded', 'true');
+        else this.button.removeAttribute('aria-expanded');
+      },
+    });
     this.button.onclick = () => {
-      if (view.isDestroyed || !canRunCommand(view.state, view)) return;
-      const editor = findEditor(view.dom);
+      if (this.destroyed || view.isDestroyed || !canRunCommand(view.state, view)) return;
       const pos = getPos();
-      if (editor && pos !== undefined) command.Command.dispatch(editor, CodeBlock.chooseLanguage,
-        { pos, rect: this.button.getBoundingClientRect(), language: this.language });
+      if (!editor || editor.isDestroyed() || pos === undefined) return;
+      const alive = () => !this.destroyed && !view.isDestroyed && !editor.isDestroyed();
+      editor._onDidClickCodeBlockLanguage.fire({
+        pos: pos as EditorLoc,
+        rect: this.button.getBoundingClientRect(),
+        language: this.language,
+        languages: codeBlockLanguages,
+        hold: () => this.controlHold.acquire(alive),
+        setLanguage: language => {
+          if (!alive()) return false;
+          const current = this.getPos();
+          return current !== undefined && editor.state.runCommand(setCodeLanguage(current, language || null));
+        },
+      });
     };
     this.button.onkeydown = event => {
-      if (!view.isDestroyed && input.historyKey(view, event)) event.stopPropagation();
+      if (!view.isDestroyed && routeHistoryKey(view, event)) event.stopPropagation();
     };
     this.pre = this.dom.appendChild(document.createElement('pre'));
     this.pre.spellcheck = false;
@@ -451,24 +452,13 @@ class CodeView implements BlockView {
     return ['', 'text', 'txt', 'plain', 'plaintext'].includes(value.toLowerCase()) ? '' : value;
   }
 
-  request(): command.CommandRequest {
-    return {
-      pos: this.getPos,
-      rect: () => this.button.getBoundingClientRect(),
-      held: value => {
-        if (value) this.button.setAttribute('aria-expanded', 'true');
-        else this.button.removeAttribute('aria-expanded');
-      },
-    };
-  }
-
   sync(): void {
     const value: string | null = this.node.attrs.language;
     if (value) this.pre.dataset.lang = value;
     else this.pre.removeAttribute('data-lang');
     this.button.disabled = !this.view.editable;
     const selected = this.language;
-    const label = CodeBlock.languages.find(choice => choice.value === selected)?.label ?? selected;
+    const label = codeBlockLanguages.find(choice => choice.value === selected)?.label ?? selected;
     if (this.label.textContent !== label) this.label.textContent = label;
   }
 
@@ -492,13 +482,14 @@ class CodeView implements BlockView {
   }
 
   destroy(): void {
+    this.destroyed = true;
     this.remove();
     this.button.onclick = this.button.onkeydown = null;
   }
 }
 
 /** Lazy grammar loading keeps unsupported labels editable as plain text. */
-class ShikiHighlighter implements codeBlock.Highlighter {
+class ShikiHighlighter implements CodeHighlighter {
   private disposed = false;
   private instance: HighlighterCore | undefined;
   private initialization: Promise<HighlighterCore> | undefined;
@@ -520,7 +511,7 @@ class ShikiHighlighter implements codeBlock.Highlighter {
     return this.initialization;
   }
 
-  async highlight(code: string, name: string | null): Promise<readonly codeBlock.Token[]> {
+  async highlight(code: string, name: string | null): Promise<readonly CodeHighlighter.Token[]> {
     const grammar = language(name);
     if (this.disposed || !grammar || !code) return [];
     try {
@@ -538,7 +529,7 @@ class ShikiHighlighter implements codeBlock.Highlighter {
       const lines = highlighter.codeToTokensWithThemes(code, {
         lang: grammar.id, themes: { light: 'github-light', dark: 'github-dark-default' },
       });
-      const result: codeBlock.Token[] = [];
+      const result: CodeHighlighter.Token[] = [];
       for (const line of lines) {
         for (const token of line) {
           if (!token.content) continue;

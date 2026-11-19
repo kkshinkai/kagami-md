@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Destroyable, Emitter, type Event } from '../event/index.js';
+import { Destroyable, Emitter } from '../event/index.js';
 
 /** Space kept between a popup and its anchor. */
 const gap = 6;
@@ -36,9 +36,9 @@ interface Position {
  */
 export class Popup extends Destroyable {
   readonly element: HTMLElement;
-  private readonly closed = this._register(new Emitter<Popup.CloseReason>());
+  private readonly _onDidClose = this._register(new Emitter<Popup.CloseReason>());
   /** Fired once, however the popup came to be closed. */
-  readonly onDidClose: Event<Popup.CloseReason> = this.closed.event;
+  get onDidClose() { return this._onDidClose.event; }
   private readonly window: Window | null;
   private open = true;
 
@@ -105,7 +105,7 @@ export class Popup extends Destroyable {
     this.window?.removeEventListener('scroll', this.onLayout, true);
     this.window?.removeEventListener('resize', this.onLayout);
     this.element.remove();
-    this.closed.fire(reason);
+    this._onDidClose.fire(reason);
   }
 
   private readonly onLayout = (): void => this.layout();

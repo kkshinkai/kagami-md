@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Destroyable, Emitter, type Event } from '../event/index.js';
+import { Destroyable, Emitter } from '../event/index.js';
 import { check, createIcon } from './icon.js';
 
 /**
@@ -15,12 +15,12 @@ import { check, createIcon } from './icon.js';
  */
 export class List extends Destroyable {
   readonly element: HTMLElement;
-  private readonly chosen = this._register(new Emitter<number>());
+  private readonly _onDidChoose = this._register(new Emitter<number>());
   /** The index of the option that was clicked. */
-  readonly onDidChoose: Event<number> = this.chosen.event;
-  private readonly pointed = this._register(new Emitter<number>());
+  get onDidChoose() { return this._onDidChoose.event; }
+  private readonly _onDidPoint = this._register(new Emitter<number>());
   /** The index of the option the pointer moved onto. The owner decides whether it becomes active. */
-  readonly onDidPoint: Event<number> = this.pointed.event;
+  get onDidPoint() { return this._onDidPoint.event; }
   private active = -1;
 
   constructor(document: Document, id: string, label: string) {
@@ -81,13 +81,13 @@ export class List extends Destroyable {
 
   private readonly click = (event: MouseEvent): void => {
     const index = this.findIndex(event.target);
-    if (index >= 0) this.chosen.fire(index);
+    if (index >= 0) this._onDidChoose.fire(index);
   };
 
   /** The pointer and the keyboard move one active option, so that two are never highlighted. */
   private readonly pointerMove = (event: PointerEvent): void => {
     const index = this.findIndex(event.target);
-    if (index >= 0 && index !== this.active) this.pointed.fire(index);
+    if (index >= 0 && index !== this.active) this._onDidPoint.fire(index);
   };
 
   override destroy(): void {

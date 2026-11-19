@@ -21,10 +21,7 @@
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,
-    "noEmit": true,
-    "customConditions": [
-      "kagami:source"
-    ]
+    "noEmit": true
   },
   "include": [
     "src",

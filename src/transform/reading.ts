@@ -8,12 +8,12 @@
 import {
   BlockSyntax, BlockQuoteSyntax, FootnoteDefinitionSyntax, HTMLTagBlockSyntax, InlineFieldClauseSyntax,
   ListItemSyntax, LiteralBlockSyntax, ParagraphSyntax, StringFieldClauseSyntax, TableCellSyntax, TableSyntax,
-  TextBlockSyntax, isFootnoteLabel, isLinkDestination, isLinkLabel, isLinkTitle, parseBlocks, type Bindings,
+  TextBlockSyntax, isFootnoteLabel, isLinkDestination, isLinkLabel, isLinkTitle, type Bindings, type Parser,
 } from '../syntax/index.js';
 import { Fragment, type Node, type Schema } from 'prosemirror-model';
 import type { Transform } from 'prosemirror-transform';
 import { fieldSource } from '../parse/field.js';
-import { parse } from '../parse/parse.js';
+import { parseContent, parseNode } from '../parse/parse.js';
 import {
   children, Correspondence, frontierPieces, sourcePieces, type Relabeled,
   type SourcePiece
@@ -82,14 +82,16 @@ export class ReadingShapes {
 }
 
 /** Keep valid definition fields in their frame; only invalid fields need a block reading. */
-export function definitionReading(tr: Transform, position: number, bindings: Bindings): Reading | null {
+export function definitionReading(tr: Transform, position: number, parser: Parser,
+  bindings: Bindings): Reading | null {
   const node = tr.doc.nodeAt(position)!;
   const label = fieldSource(node.child(0));
   if (node.type === node.type.schema.nodes.footnoteDefinition) {
     if (isFootnoteLabel(label)) return null;
     const paragraph = node.child(1).type === node.type.schema.nodes.paragraph ? node.child(1) : null;
     const reading = readDefinitionLine(node, { text: '^' + label, origin: position + 1 },
-      { text: paragraph ? fieldSource(paragraph) : '', origin: position + node.child(0).nodeSize + 2 }, null, bindings);
+      { text: paragraph ? fieldSource(paragraph) : '', origin: position + node.child(0).nodeSize + 2 }, null, parser,
+      bindings);
     // The caret is framing, not a character from the editor's label.
     reading.origins[0]!.start++;
     reading.origins[0]!.origin++;
@@ -117,12 +119,12 @@ export function definitionReading(tr: Transform, position: number, bindings: Bin
       ? null : {
         text: titleText, origin: destinationOrigin + node.child(1).nodeSize,
         delimiter: delimiter ?? preferred
-      }, bindings);
+      }, parser, bindings);
 }
 
 /** Assemble authored fields with their recorded framing (B3e item 1, B3i item 1). */
 function readDefinitionLine(node: Node, label: AuthoredField, destination: AuthoredField, title: TitleField | null,
-  bindings: Bindings): Reading {
+  parser: Parser, bindings: Bindings): Reading {
   const field = node.child(1);
   const angle = field.type === node.type.schema.nodes.linkDestination && field.attrs.spelling?.inAngleBrackets;
   let text = '[' + label.text + ']:' + (node.attrs.spelling?.whitespaceAfterLabel ?? ' ') + (angle ? '<' : '');
@@ -136,11 +138,12 @@ function readDefinitionLine(node: Node, label: AuthoredField, destination: Autho
     origins.push({ start: text.length, end: text.length + title.text.length, origin: title.origin });
     text += title.text + (title.delimiter === '(' ? ')' : title.delimiter);
   }
-  return { text, blocks: parseBlocks(text, { target: 'editor' }, bindings), origins };
+  return { text, blocks: parser.parseBlocks(text, { bindings }), origins };
 }
 
 /** Read a declaration field with its quote's framing and its existing editor origin. */
-export function quoteReading(node: Node, field: string, origin: number, bindings: Bindings): Reading {
+export function quoteReading(node: Node, field: string, origin: number, parser: Parser,
+  bindings: Bindings): Reading {
   const margin = indentation(node);
   const marker = margin + quoteMarker(node.attrs.spelling?.whitespaceAfterMarker ?? ' ', margin.length);
   const origins: Origin[] = [];
@@ -155,7 +158,7 @@ export function quoteReading(node: Node, field: string, origin: number, bindings
     origins.push({ start, end: text.length, origin: origin + offset });
     offset += value.length;
   }
-  return { text, blocks: parseBlocks(text, { target: 'editor' }, bindings), origins };
+  return { text, blocks: parser.parseBlocks(text, { bindings }), origins };
 }
 
 /**
@@ -169,7 +172,7 @@ export function definitionShapes(reading: Reading, schema: Schema, authored: Map
   if (blocks.length !== 1 || !(paragraph instanceof ParagraphSyntax))
     return readingShapes(blocks, text, schema, origins, authored);
   const frontier = paragraph.frontier;
-  const parsed = parse.content(frontier, text, schema);
+  const parsed = parseContent(frontier, text, schema);
   const read = frontierPieces(frontier, paragraph.contentStart);
   const first = read[0]!;
   const last = read[read.length - 1]!;
@@ -178,7 +181,7 @@ export function definitionShapes(reading: Reading, schema: Schema, authored: Map
   const content = inputContent(opening, schema).append(parsed).append(inputContent(terminal, schema));
   const pieces: SourcePiece[] = [{ start: 0, end: first.start, length: opening.length }, ...read,
     { start: last.end, end: text.length, length: terminal.length }];
-  const node = parse.node(paragraph, content, schema);
+  const node = parseNode(paragraph, content, schema);
   const correspondence = new Correspondence(paragraph);
   const converted = new ReadContext(text, schema, origins, authored).text(node, correspondence, paragraph, pieces, 0);
   return new ReadingShapes([converted.shape], converted.fields, origins);
@@ -224,7 +227,7 @@ class ReadContext {
     if (syntax instanceof TextBlockSyntax || syntax instanceof InlineFieldClauseSyntax ||
         syntax instanceof StringFieldClauseSyntax) {
       const frontier = syntax.frontier;
-      const content = parse.content(frontier, source, schema);
+      const content = parseContent(frontier, source, schema);
       const pieces = frontierPieces(frontier, syntax.contentStart);
       if (syntax instanceof TableCellSyntax) {
         const paragraph = schema.nodes.tableParagraph.createChecked(null, content);
@@ -232,17 +235,17 @@ class ReadContext {
         const node = (header ? schema.nodes.tableHeader : schema.nodes.tableCell).createChecked(null, paragraph);
         return { shape: this.container(node, header ? undefined : syntax, [inner.shape]), node, fields: inner.fields };
       }
-      return this.text(parse.node(syntax, content, schema), reading, syntax, pieces, at);
+      return this.text(parseNode(syntax, content, schema), reading, syntax, pieces, at);
     }
     if (syntax instanceof HTMLTagBlockSyntax) {
       const frontier = syntax.tag.frontier;
       const text = frontier.map(piece => piece.nodes.at(-1)?.type === 'lineEnding'
         ? '\n' : source.slice(piece.start, piece.end)).join('');
-      return this.text(parse.node(syntax, this.literal(text), schema), reading, syntax,
+      return this.text(parseNode(syntax, this.literal(text), schema), reading, syntax,
         frontierPieces(frontier, syntax.tag.start), at);
     }
     if (syntax instanceof LiteralBlockSyntax)
-      return this.text(parse.node(syntax, this.literal(syntax.content), schema), reading, syntax, sourcePieces(syntax)!,
+      return this.text(parseNode(syntax, this.literal(syntax.content), schema), reading, syntax, sourcePieces(syntax)!,
         at);
     const nodes: Node[] = [];
     const shapes: Shape[] = [];
@@ -267,7 +270,7 @@ class ReadContext {
       shapes.push(result.shape);
       fields.push(...result.fields);
     }
-    const node = parse.node(syntax, nodes, schema);
+    const node = parseNode(syntax, nodes, schema);
     return { shape: this.container(node, syntax, shapes), node, fields };
   }
 

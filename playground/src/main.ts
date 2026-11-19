@@ -5,14 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { KagamiMD, type SourceLoc, type Tag } from 'kagami-md';
+import { KagamiMD, type SourceLoc } from 'kagami-md';
 import { EditorState } from '@codemirror/state';
 import { EditorView, highlightSpecialChars, keymap, lineNumbers } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
-import { attachEditorUI, completionList } from './editorui.js';
+import { attachEditorUI } from './editorui.js';
+import { isMobile } from './browser.js';
 import initial from './introduction.md?raw';
 import 'kagami-md/styles.css';
 import './main.css';
@@ -26,24 +27,31 @@ const tags = ['idea', 'todo', 'draft', 'reading'];
 const pages = ['Home', 'Projects', 'Reading list'];
 
 /** Search the sample tag or page names through the editor's completion API. */
-function matching(names: readonly string[]): Tag.Completer {
-  return query => {
-    const wanted = query.toLowerCase();
-    return names.filter(name => name.toLowerCase().includes(wanted)).map(name => ({ id: name, value: name }));
+function matching(names: readonly string[]): KagamiMD.CompletionProvider {
+  return {
+    provideCandidates(query) {
+      const wanted = query.toLowerCase();
+      return names.filter(name => name.toLowerCase().includes(wanted)).map(name => ({ id: name, value: name }));
+    },
   };
 }
 
+const tagProvider = matching(tags);
+const wikilinkProvider = matching(pages);
+
 const spec = {
   parent: mount,
-  completeTag: matching(tags),
-  completeWikilink: matching(pages),
-  completionList,
+  drawnSelection: !isMobile(),
+  tag: {},
+  wikilink: {},
 };
 
 /** Create each document with the same completion providers and error reporting. */
 function createEditor(doc: string): KagamiMD {
   const editor = KagamiMD.create({ ...spec, doc });
   editor.onDidError(error => console.error(error));
+  editor.registerTagCompletionProvider(tagProvider);
+  editor.registerWikilinkCompletionProvider(wikilinkProvider);
   return editor;
 }
 
@@ -87,9 +95,10 @@ function showPane(showSource: boolean): void {
 function showSource(): void {
   if (!sourceMount.hidden) return;
   const { state } = editor;
+  const selection = state.getSelection();
   source.setState(EditorState.create({
-    doc: state.doc,
-    selection: { anchor: state.editorToSource(state.selection.anchor), head: state.editorToSource(state.selection.head) },
+    doc: state.getMarkdown(),
+    selection: { anchor: state.editorToSource(selection.anchor), head: state.editorToSource(selection.head) },
     extensions: sourceExtensions,
   }));
   showPane(true);
@@ -101,7 +110,7 @@ function showSource(): void {
 function showEditor(): void {
   if (!mount.hidden) return;
   const doc = source.state.doc.toString();
-  if (doc !== editor.state.doc) {
+  if (doc !== editor.state.getMarkdown()) {
     ui.destroy();
     editor.destroy();
     editor = createEditor(doc);
@@ -110,7 +119,7 @@ function showEditor(): void {
   showPane(false);
   // CodeMirror's offsets are UTF-16 offsets in LF text, which is what a source location is.
   const { anchor, head } = source.state.selection.main;
-  editor.state.select(editor.state.sourceToEditor(anchor as SourceLoc), editor.state.sourceToEditor(head as SourceLoc));
+  editor.state.setSelection(editor.state.sourceToEditor(anchor as SourceLoc), editor.state.sourceToEditor(head as SourceLoc));
   editor.focus();
 }
 

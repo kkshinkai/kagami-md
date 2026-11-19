@@ -25,7 +25,6 @@ interface Block {
  * Write a forest made of the same blocks in the same order. Native lift and
  * replace-around steps change their frames, retaining every block as a gap.
  * Both forests are restricted to the caller's sibling window.
- * @internal
  */
 export function reframe(tr: Transform, from: number, to: number, content: Fragment): void {
   const before: Block[] = [];

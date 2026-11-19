@@ -8,23 +8,22 @@
 import type { Node } from 'prosemirror-model';
 import { Plugin, PluginKey, type EditorState, type TextSelection } from 'prosemirror-state';
 import { Decoration } from 'prosemirror-view';
-import { CAPSULE_START, reveal, type SourcePresentation } from '../editor/reveal.js';
+import { CAPSULE_START, revealState, type SourcePresentation } from '../editor/reveal.js';
+import { PluginDesc } from '../editor/plugin.js';
 import type { Revealing } from '../state/normalization.js';
 
 /** Present code spans as source capsules with native text editing. */
-export function codeSpan(): Plugin[] {
-  return [codeSpan.presentation()];
+export function codeSpan(): PluginDesc[] {
+  return [PluginDesc.viewState(codeSpanPresentation)];
 }
 
-export namespace codeSpan {
-  /** Mark the start of every code span. */
-  export function presentation(): Plugin<SourcePresentation> {
-    return new Plugin({
-      key: presentationKey,
-      state: reveal.state(draw),
-      props: { decorations(state) { return presentationKey.getState(state)?.decorations ?? null; } },
-    });
-  }
+/** Mark the start of every code span. */
+function codeSpanPresentation(): Plugin<SourcePresentation> {
+  return new Plugin({
+    key: presentationKey,
+    state: revealState(draw),
+    props: { decorations(state) { return presentationKey.getState(state)?.decorations ?? null; } },
+  });
 }
 
 const presentationKey = new PluginKey<SourcePresentation>('code-span-presentation');

@@ -6,52 +6,34 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { DOMNode } from '../editor/dom.js';
+import type { KagamiMD } from '../editor/editor.js';
 import type { Node } from 'prosemirror-model';
-import { Plugin } from 'prosemirror-state';
+import { Plugin, PluginKey } from 'prosemirror-state';
 import { Decoration, DecorationSet, type EditorView, type ViewMutationRecord } from 'prosemirror-view';
-import * as command from '../command/command.js';
 import { registerBlockView, type BlockView, type HandleTarget } from '../editor/blockview.js';
 import { changedRanges } from '../state/changes.js';
 import { schema } from '../types/schema.js';
 import { TableHandles } from './tablehandles.js';
-import { Table } from './table.js';
 
-interface TableViewState extends command.Command.RequestState {
-  readonly decorations: DecorationSet;
-}
+const alignmentKey = new PluginKey<DecorationSet>('table-alignment');
 
-/**
- * Draw table alignment and row and column handles. Native tableEditing
- * retains cell gestures, keyboard navigation and rectangular paste.
- */
-export function tableView(): Plugin {
-  const tables = new Set<TableView>();
-  const plugin: Plugin<TableViewState> = new Plugin({
-    key: Table.chooseAction.key,
+/** Keep cell alignment decorations in view-state while an editor view is mounted. */
+export function tableAlignment(): Plugin<DecorationSet> {
+  return new Plugin<DecorationSet>({
+    key: alignmentKey,
     state: {
       init(_config, state) {
-        return {
-          decorations: DecorationSet.create(state.doc, columnAlignment(state.doc, 0, state.doc.content.size)),
-          hold(view, pos) {
-            for (const table of tables) {
-              if (table.view !== view) continue;
-              const held = command.keepRequest(table.handles.request(), pos,
-                () => tables.has(table) && !view.isDestroyed);
-              if (held) return held;
-            }
-            return null;
-          },
-        };
+        return DecorationSet.create(state.doc, columnAlignment(state.doc, 0, state.doc.content.size));
       },
-      apply(tr, value) {
-        if (!tr.docChanged) return value;
+      apply(tr, decorations) {
+        if (!tr.docChanged) return decorations;
         const changes = changedRanges(tr.steps, tr.mapping);
         // Remove the cells of the blocks a change reached before mapping. A moved block can change
         // parent, while decoration subtree mapping assumes unchanged ownership.
-        let decorations = value.decorations;
+        let next = decorations;
         for (const change of changes) {
           const span = blockSpan(tr.before, change.from, change.to);
-          decorations = decorations.remove(decorations.find(span.from, span.to));
+          next = next.remove(next.find(span.from, span.to));
         }
         const added: Decoration[] = [];
         const drawn = new Set<number>();
@@ -60,33 +42,46 @@ export function tableView(): Plugin {
           if (!drawn.has(span.from)) added.push(...columnAlignment(tr.doc, span.from, span.to));
           drawn.add(span.from);
         }
-        return { decorations: decorations.map(tr.mapping, tr.doc).add(tr.doc, added), hold: value.hold };
+        return next.map(tr.mapping, tr.doc).add(tr.doc, added);
       },
     },
+    props: {
+      decorations: state => alignmentKey.getState(state) ?? null,
+    },
+  });
+}
+
+/**
+ * Draw table overflow surfaces and row and column handles. Native tableEditing
+ * retains cell gestures, keyboard navigation and rectangular paste.
+ */
+export function tableView(editor?: KagamiMD): Plugin {
+  const tables = new Set<TableView>();
+  return new Plugin({
     view(view) {
       let editable = view.editable;
-      return { update(_view, previous) {
-        const changed = editable !== view.editable;
-        editable = view.editable;
-        for (const table of tables) if (table.view === view) table.handles.refresh(previous, changed);
-      } };
+      return {
+        update(_view, previous) {
+          const changed = editable !== view.editable;
+          editable = view.editable;
+          for (const table of tables) if (table.view === view) table.handles.refresh(previous, changed);
+        },
+      };
     },
     props: {
       handleScrollToSelection() {
         for (const table of tables) if (table.handles.scrollRowSelectionIntoView()) return true;
         return false;
       },
-      decorations: state => plugin.getState(state)?.decorations,
       nodeViews: {
         table(node, view, getPos) {
-          const table = new TableView(node, view, getPos, () => tables.delete(table));
+          const table = new TableView(node, view, getPos, () => tables.delete(table), editor);
           tables.add(table);
           return registerBlockView(node, table);
         },
       },
     },
   });
-  return plugin;
 }
 
 /** A cell's alignment is its column's, which the table holds. */
@@ -129,7 +124,7 @@ export class TableView implements BlockView {
   readonly handles: TableHandles;
 
   constructor(public node: Node, readonly view: EditorView, readonly getPos: () => number | undefined,
-    private readonly remove: () => void) {
+    private readonly remove: () => void, readonly editor?: KagamiMD) {
     const document = view.dom.ownerDocument;
     this.dom = document.createElement('div');
     this.dom.className = 'kagami-table-drag';

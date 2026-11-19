@@ -10,10 +10,10 @@ import { repairPhrasing, type TextRepair } from '../syntax/index.js';
 import type { Node } from 'prosemirror-model';
 import type { Transaction } from 'prosemirror-state';
 import { fieldSource } from '../parse/field.js';
-import { phrasing, type correction } from './correction.js';
+import { type CorrectionFields, type PhrasingUpdate } from './correction.js';
 
 /** Put pretense repairs into the text when an edited writing unit exposes imported lazy lines. */
-export function pretense(tr: Transaction, fields: correction.Fields): void {
+export function pretense(tr: Transaction, fields: CorrectionFields): void {
   const context = new RepairContext(fields.updates);
   for (const position of fields.paragraphs(tr)) context.paragraph(tr.doc.nodeAt(position)!, position);
   for (const repair of context.repairs.sort((a, b) => b.start - a.start))
@@ -25,7 +25,7 @@ class RepairContext {
   readonly completed = new Set<Node>();
   readonly repairs: TextRepair[] = [];
 
-  constructor(updates: readonly phrasing.Update[]) {
+  constructor(updates: readonly PhrasingUpdate[]) {
     for (const update of updates) for (const field of update.completed) this.completed.add(field);
   }
 

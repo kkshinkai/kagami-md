@@ -64,7 +64,7 @@ const nodes = {
 
   /** The default block, holding editable inline source. */
   paragraph: {
-    group: 'block field', content: 'inline*', attrs: { spelling },
+    group: 'block field', content: 'inline*', attrs: { spelling }, selectable: false,
     parseDOM: [{ tag: 'p' }], toDOM() { return ['p', 0]; },
   } as NodeSpec,
 
@@ -80,7 +80,8 @@ const nodes = {
 
   /** Structured front matter contains one YAML mapping. */
   yamlFrontMatter: {
-    group: 'frontMatter', content: 'yamlMapping', attrs: { spelling }, defining: true, isolating: true,
+    group: 'frontMatter', content: 'yamlMapping', attrs: { spelling },
+    defining: true, isolating: true, selectable: false,
     parseDOM: [{ tag: 'section[data-frontmatter]' }],
     toDOM() { return ['section', { class: 'md-frontmatter', 'data-frontmatter': '' }, 0]; },
   } as NodeSpec,
@@ -88,27 +89,29 @@ const nodes = {
   /** Front matter that cannot be structured keeps its literal source. */
   rawFrontMatter: {
     group: 'frontMatter', content: 'text*', attrs: { spelling }, marks: '', code: true,
-    defining: true, isolating: true,
+    defining: true, isolating: true, selectable: false,
     toDOM() { return ['pre', { class: 'md-frontmatter-source' }, ['code', 0]]; },
   } as NodeSpec,
 
   /** An ordered collection of YAML properties. */
   yamlMapping: {
-    group: 'yamlNode yamlCollection', content: 'yamlPair*', attrs: { spelling }, defining: true, isolating: true,
+    group: 'yamlNode yamlCollection', content: 'yamlPair*', attrs: { spelling },
+    defining: true, isolating: true, selectable: false,
     parseDOM: [{ tag: '.md-yaml-map' }],
     toDOM() { return ['div', { class: 'md-yaml-map' }, 0]; },
   } as NodeSpec,
 
   /** A YAML property contains its key followed by its value. */
   yamlPair: {
-    content: 'yamlNode yamlNode', attrs: { spelling }, defining: true, isolating: true,
+    content: 'yamlNode yamlNode', attrs: { spelling }, defining: true, isolating: true, selectable: false,
     parseDOM: [{ tag: '.md-yaml-property' }],
     toDOM() { return ['div', { class: 'md-yaml-property' }, 0]; },
   } as NodeSpec,
 
   /** An ordered sequence of YAML values. */
   yamlSequence: {
-    group: 'yamlNode yamlCollection', content: 'yamlNode*', attrs: { spelling }, defining: true, isolating: true,
+    group: 'yamlNode yamlCollection', content: 'yamlNode*', attrs: { spelling },
+    defining: true, isolating: true, selectable: false,
     parseDOM: [{ tag: '.md-yaml-array' }],
     toDOM() { return ['div', { class: 'md-yaml-array' }, 0]; },
   } as NodeSpec,
@@ -124,13 +127,13 @@ const nodes = {
 
   /** A quote holds blocks, with an empty paragraph when its source body is empty. */
   blockQuote: {
-    group: 'block container', content: 'block+', attrs: { spelling }, defining: true,
+    group: 'block container', content: 'block+', attrs: { spelling }, defining: true, selectable: false,
     parseDOM: [{ tag: 'blockquote' }], toDOM() { return ['blockquote', 0]; },
   } as NodeSpec,
 
   /** A callout's kind and title precede its optional body blocks. */
   callout: {
-    group: 'block container', content: 'calloutTitle block*', defining: true,
+    group: 'block container', content: 'calloutTitle block*', defining: true, selectable: false,
     attrs: { spelling, calloutType: { default: 'note', validate: 'string' } },
     parseDOM: [{ tag: 'aside[data-callout]',
       getAttrs(dom) { return { calloutType: dom.getAttribute('data-callout') ?? 'note' }; } }],
@@ -141,20 +144,20 @@ const nodes = {
 
   /** The inline source on a callout's declaration line. */
   calloutTitle: {
-    group: 'field', content: 'inline*', defining: true,
+    group: 'field', content: 'inline*', defining: true, selectable: false,
     parseDOM: [{ tag: '[data-callout-title]' }],
     toDOM() { return ['div', { class: 'md-callout-title', 'data-callout-title': '' }, 0]; },
   } as NodeSpec,
 
   /** An unordered list; spelling records its markers and tightness. */
   bulletList: {
-    group: 'block list', content: 'listItem+', attrs: { spelling },
+    group: 'block list', content: 'listItem+', attrs: { spelling }, selectable: false,
     parseDOM: [{ tag: 'ul' }], toDOM() { return ['ul', 0]; },
   } as NodeSpec,
 
   /** A numbered list beginning with startNumber. */
   orderedList: {
-    group: 'block list', content: 'listItem+',
+    group: 'block list', content: 'listItem+', selectable: false,
     attrs: { spelling, startNumber: { default: 1, validate: 'number' } },
     parseDOM: [{ tag: 'ol', getAttrs(dom) { return { startNumber: Number(dom.getAttribute('start') ?? 1) }; } }],
     toDOM(node) { return ['ol', { start: node.attrs.startNumber }, 0]; },
@@ -163,7 +166,7 @@ const nodes = {
   /** A list item's optional checkbox is separate from its block content. */
   listItem: {
     group: 'container', content: 'block+', attrs: { spelling, checked: { default: null, validate: 'boolean|null' } },
-    defining: true,
+    defining: true, selectable: false,
     parseDOM: [{ tag: 'li', getAttrs(dom) {
       const checkbox = dom.querySelector<HTMLInputElement>(
         ':scope > input[type="checkbox"], :scope > label > input[type="checkbox"]');
@@ -180,21 +183,21 @@ const nodes = {
 
   /** A footnote's editable label followed by its body blocks. */
   footnoteDefinition: {
-    group: 'block container', content: 'footnoteLabel block+', defining: true,
+    group: 'block container', content: 'footnoteLabel block+', defining: true, selectable: false,
     attrs: { spelling, identifier: { default: '', validate: 'string' } },
     toDOM() { return ['div', { class: 'md-footnote-definition', 'data-footnote-definition': '' }, 0]; },
   } as NodeSpec,
 
   /** A footnote label permits line endings but no nested inline nodes. */
   footnoteLabel: {
-    group: 'field', content: '(text | lineEnding)*', defining: true,
+    group: 'field', content: '(text | lineEnding)*', defining: true, selectable: false,
     toDOM() { return ['span', { class: 'md-footnote-definition-head' },
       ['span', { contenteditable: 'false' }, '[^'], ['span', 0], ['span', { contenteditable: 'false' }, ']:']]; },
   } as NodeSpec,
 
   /** An ATX or setext heading; level is its rank and form its Markdown form. */
   heading: {
-    group: 'block field', content: 'inline*', defining: true,
+    group: 'block field', content: 'inline*', defining: true, selectable: false,
     attrs: { spelling, level: { default: 1, validate: 'number' }, form: { default: 'atx', validate: 'string' } },
     parseDOM: [1, 2, 3, 4, 5, 6].map(level => ({ tag: `h${level}`, attrs: { level, form: 'atx' } })),
     toDOM(node) { return [`h${node.attrs.level}`, 0]; },
@@ -202,7 +205,7 @@ const nodes = {
 
   /** Literal code, with nullable language and metadata from its info string. */
   codeBlock: {
-    group: 'block', content: 'text*', marks: '', code: true, defining: true,
+    group: 'block', content: 'text*', marks: '', code: true, defining: true, selectable: false,
     attrs: {
       spelling, language: { default: null, validate: 'string|null' },
       meta: { default: null, validate: 'string|null' }
@@ -222,14 +225,14 @@ const nodes = {
 
   /** Literal HTML, with the CommonMark start condition that opened the block. */
   htmlBlock: {
-    group: 'block', content: 'text*', marks: '', code: true, defining: true,
+    group: 'block', content: 'text*', marks: '', code: true, defining: true, selectable: false,
     attrs: { spelling, startCondition: { default: 6, validate: 'number' } },
     toDOM() { return ['div', { class: 'md-html-block', 'data-html-block': '' }, 0]; },
   } as NodeSpec,
 
   /** A standalone image or line-break tag keeps both its source and interpreted attributes. */
   htmlTagBlock: {
-    group: 'block', content: 'text*', marks: '', defining: true,
+    group: 'block', content: 'text*', marks: '', defining: true, selectable: false,
     attrs: {
       spelling, tag: { default: 'htmlLineBreak', validate: 'string' }, destination: { default: '', validate: 'string' },
       title: { default: null, validate: 'string|null' }, alt: { default: '', validate: 'string' },
@@ -246,7 +249,7 @@ const nodes = {
 
   /** A link definition's semantic values accompany its three editable string fields. */
   linkReferenceDefinition: {
-    group: 'block', content: 'linkLabel linkDestination linkTitle?', defining: true,
+    group: 'block', content: 'linkLabel linkDestination linkTitle?', defining: true, selectable: false,
     attrs: { spelling, identifier: { default: '', validate: 'string' },
       destination: { default: '', validate: 'string' },
       title: { default: null, validate: 'string|null' } },
@@ -255,26 +258,26 @@ const nodes = {
 
   /** A link definition label may extend over source lines. */
   linkLabel: {
-    group: 'field', content: '(text | lineEnding)*', defining: true,
+    group: 'field', content: '(text | lineEnding)*', defining: true, selectable: false,
     toDOM() { return ['span', { class: 'md-link-definition-head' },
       ['span', { contenteditable: 'false' }, '['], ['span', 0], ['span', { contenteditable: 'false' }, ']:']]; },
   } as NodeSpec,
 
   /** A destination's editable spelling, without its optional angle brackets. */
   linkDestination: {
-    group: 'field', content: 'text*', attrs: { spelling }, defining: true,
+    group: 'field', content: 'text*', attrs: { spelling }, defining: true, selectable: false,
     toDOM() { return ['span', { class: 'md-link-definition-destination' }, 0]; },
   } as NodeSpec,
 
   /** A title's editable source; spelling retains its quote delimiter. */
   linkTitle: {
-    group: 'field', content: '(text | lineEnding)*', attrs: { spelling }, defining: true,
+    group: 'field', content: '(text | lineEnding)*', attrs: { spelling }, defining: true, selectable: false,
     toDOM() { return ['span', { class: 'md-link-definition-title' }, 0]; },
   } as NodeSpec,
 
   /** A GFM table keeps column alignments beside the native table structure. */
   table: {
-    ...tables.table, content: 'tableRow+', attrs: { spelling, alignments: { default: [] } },
+    ...tables.table, content: 'tableRow+', selectable: false, attrs: { spelling, alignments: { default: [] } },
     parseDOM: [{ tag: 'table', getAttrs(dom) {
       return { alignments: Array.from(dom.querySelector('tr')?.children ?? [], cell => {
         return alignment((cell as HTMLElement).style.textAlign || cell.getAttribute('align'));
@@ -283,10 +286,10 @@ const nodes = {
   } as NodeSpec,
 
   /** Each row contains at least one cell, under Kagami's node names. */
-  tableRow: { ...tables.table_row, content: '(tableHeader | tableCell)+' } as NodeSpec,
+  tableRow: { ...tables.table_row, content: '(tableHeader | tableCell)+', selectable: false } as NodeSpec,
 
   /** A header cell uses the table package's attributes and DOM rules. */
-  tableHeader: { ...tables.table_header, parseDOM: [
+  tableHeader: { ...tables.table_header, selectable: false, parseDOM: [
     { tag: 'td', priority: 60, getAttrs(dom) {
       return dom.parentElement === dom.closest('table')?.querySelector('tr')
         ? { colspan: 1, rowspan: 1, colwidth: null } : false;
@@ -296,12 +299,12 @@ const nodes = {
 
   /** A body cell uses the table package's attributes and DOM rules. */
   tableCell: {
-    ...tables.table_cell, parseDOM: unmerged(tables.table_cell.parseDOM as readonly TagParseRule[])
+    ...tables.table_cell, selectable: false, parseDOM: unmerged(tables.table_cell.parseDOM as readonly TagParseRule[])
   } as NodeSpec,
 
   /** The one textblock inside each cell, as the table package requires. */
   tableParagraph: {
-    group: 'field', content: 'inline*',
+    group: 'field', content: 'inline*', selectable: false,
     parseDOM: [{ tag: 'p', context: 'tableHeader/|tableCell/', priority: 60,
       getAttrs: dom => dom.closest('td, th') ? null : false }],
     toDOM() { return ['p', 0]; },

@@ -6,16 +6,17 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import {
-  Bindings, CodeSpanSyntax, HTMLTagBlockSyntax, repairPhrasing, transduce,
-  type TransduceOptions
+  CodeSpanSyntax, HTMLTagBlockSyntax, repairPhrasing,
+  type Bindings, type Parser,
 } from '../syntax/index.js';
 import { Fragment, Slice, Mark, type Node, type ResolvedPos } from 'prosemirror-model';
-import { parse } from '../parse/parse.js';
+import { parseBlock, parseContent } from '../parse/parse.js';
 import { fieldOptions } from '../parse/field.js';
 
 /** Write formatting read from HTML as editable source, keeping the native block structure. */
-export function inlineSource(slice: Slice, document: Node, bindings: Bindings, context?: ResolvedPos): Slice {
-  const writer = new SourceContext(bindings, context);
+export function inlineSource(slice: Slice, document: Node, parser: Parser, bindings: Bindings,
+  context?: ResolvedPos): Slice {
+  const writer = new SourceContext(parser, bindings, context);
   if (slice.content.firstChild?.isInline) {
     const field = document.type.schema.nodes.paragraph.create(null, slice.content);
     return new Slice(writer.node(field, null, 0).content, slice.openStart, slice.openEnd);
@@ -28,7 +29,7 @@ class SourceContext {
   readonly table: boolean;
   readonly oneLine: boolean;
 
-  constructor(readonly bindings: Bindings, context?: ResolvedPos) {
+  constructor(readonly parser: Parser, readonly bindings: Bindings, context?: ResolvedPos) {
     this.table = Boolean(context && Array.from({ length: context.depth + 1 }, (_, depth) =>
       context.node(depth)).some(node => node.type.spec.tableRole === 'table'));
     this.oneLine = this.table || context?.parent.type.name === 'calloutTitle' ||
@@ -46,7 +47,7 @@ class SourceContext {
     const options = fieldOptions(node, parent, index);
     const table = this.table || options.phrasing === 'tableCell';
     const oneLine = this.oneLine || table || options.phrasing === 'atxHeading' || options.phrasing === 'calloutTitle';
-    const writer = new InlineWriter(table, oneLine);
+    const writer = new InlineWriter(table, oneLine, this.parser);
     const references = needsReferences(node.content.content);
     const protectedText = repairSource(writer.write(node.content.content, references ? 'references' : 'escaped'),
       options, false);
@@ -54,19 +55,22 @@ class SourceContext {
       true);
     const protectedContent = this.read(protectedText, node, options);
     const literalContent = this.read(literalText, node, options);
-    const blocks = transduce(protectedText, { ...options, settle: true }, this.bindings);
+    const blocks = this.parser.transduce(protectedText, { ...options, bindings: this.bindings, settle: true });
     if (blocks.kind === 'blocks' && blocks.blocks.length === 1 && blocks.blocks[0] instanceof HTMLTagBlockSyntax)
-      return parse.block(blocks.blocks[0], protectedText, node.type.schema);
+      return parseBlock(blocks.blocks[0], protectedText, node.type.schema);
     if (!protectedContent) throw new RangeError('Imported formatting must write inline source');
     return node.copy(literalContent && rendered(literalContent).eq(rendered(protectedContent))
       ? literalContent : protectedContent);
   }
 
-  read(source: string, node: Node, options: TransduceOptions): Fragment | null {
-    const reading = transduce(source,
-      { ...options, phrasing: options.phrasing === 'paragraph' ? 'atxHeading' : options.phrasing, settle: true },
-      this.bindings);
-    return reading.kind === 'inline' ? parse.content(reading.frontier, source, node.type.schema) : null;
+  read(source: string, node: Node, options: Parser.TransduceOptions): Fragment | null {
+    const reading = this.parser.transduce(source, {
+      ...options,
+      bindings: this.bindings,
+      phrasing: options.phrasing === 'paragraph' ? 'atxHeading' : options.phrasing,
+      settle: true,
+    });
+    return reading.kind === 'inline' ? parseContent(reading.frontier, source, node.type.schema) : null;
   }
 }
 
@@ -74,7 +78,7 @@ type Spelling = 'literal' | 'escaped' | 'references';
 
 /** Write marked siblings, opening the longest enclosing mark first. */
 class InlineWriter {
-  constructor(readonly table: boolean, readonly oneLine: boolean) {}
+  constructor(readonly table: boolean, readonly oneLine: boolean, readonly parser: Parser) {}
 
   write(nodes: readonly Node[], spelling: Spelling): string {
     let result = '';
@@ -144,7 +148,7 @@ class InlineWriter {
     const source = fence + padding + text + padding + fence;
     if (!this.table) return source;
     const repaired = repairTable(source);
-    const reading = transduce(repaired, { phrasing: 'tableCell' }, Bindings.none);
+    const reading = this.parser.transduce(repaired, { phrasing: 'tableCell' });
     const syntax = reading.kind === 'inline' && reading.children.length === 1 ? reading.children[0] : null;
     if (syntax instanceof CodeSpanSyntax && syntax.code === text) return repaired;
     return '<code>' + text.replace(/[!-/:-@\[-`{-~]/g, character => `&#${character.charCodeAt(0)};`) + '</code>';
@@ -152,7 +156,7 @@ class InlineWriter {
 }
 
 /** Keep the imported field's grammar without promoting its text into blocks. */
-function repairSource(text: string, options: TransduceOptions, escapeBlocks: boolean): string {
+function repairSource(text: string, options: Parser.TransduceOptions, escapeBlocks: boolean): string {
   for (const repair of repairPhrasing(text, options.phrasing, { escapeBlocks }).reverse())
     text = text.slice(0, repair.start) + repair.insert + text.slice(repair.end);
   return text;

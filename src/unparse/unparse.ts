@@ -10,7 +10,7 @@ import { fieldSource, frontMatterSource } from '../parse/field.js';
 import { Fragment, type Node, type ResolvedPos, type Slice } from 'prosemirror-model';
 import { fitsIndentedCode, fitsOnMarkerLine, htmlBlockEnds, longestClosingFence, needsEdgeMark,
   paragraphReactions, repairPhrasing, startsLinkTitle, measureWidth, type CalloutSpelling,
-  transduce, Bindings, type FootnoteDefinitionSpelling,
+  Parser, type FootnoteDefinitionSpelling,
   type MathBlockSpelling, type TableSpelling } from '../syntax/index.js';
 import { schema, pendingMarks, type CodeSpelling, type HeadingSpelling } from '../types/schema.js';
 import {
@@ -25,7 +25,9 @@ import {
 import {
   Closing, type DisambiguationContext, type Opening, type Unparsed
 } from './unparsed.js';
-import { yaml } from './yaml.js';
+import { unparseFrontMatter, unparseYAML } from './yaml.js';
+
+const dropsChildParser = new Parser({ target: 'editor' });
 
 /** Write a block's body and its exposure to neighboring blocks. */
 export function unparse(node: Node, context: DisambiguationContext, options: unparse.Options): Unparsed {
@@ -42,136 +44,138 @@ export namespace unparse {
     /** Whether starting spaces and tabs are trimmed or kept with the mark. */
     readonly keepStartingSpaceOrTab: 'trim' | 'keep-with-zwsp';
   }
+}
 
-  /** What is written when nothing is said. */
-  export const defaults: Options = {
-    keepEmptyParagraph: 'keep-non-final-with-zwsp',
-    keepEmptySetextHeading: 'keep-with-zwsp',
-    keepStartingSpaceOrTab: 'keep-with-zwsp',
-  };
+/** What is written when nothing is said. */
+export const defaultUnparseOptions: unparse.Options = {
+  keepEmptyParagraph: 'keep-non-final-with-zwsp',
+  keepEmptySetextHeading: 'keep-with-zwsp',
+  keepStartingSpaceOrTab: 'keep-with-zwsp',
+};
 
-  /** A field's text as written: under `trim`, without the spaces and tabs it starts with. */
-  export function fieldText(node: Node, options: Options): string {
-    const text = fieldSource(node);
-    return options.keepStartingSpaceOrTab === 'trim' ? text.replace(/^[ \t]+/, '') : text;
+/** Write a block as the only block of a file, as an export shows its source. */
+export function unparseAlone(node: Node): Unparsed {
+  return unparse(node, {
+    column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
+    parent: schema.nodes.document.create(null, node), index: 0, loose: true,
+  }, defaultUnparseOptions);
+}
+
+/**
+ * The blank lines between two adjacent units: what their nodes record, kept within the range
+ * that preserves both readings.
+ *
+ * @param list The list both are items of, or null at the top level.
+ */
+export function unitSeparator(left: RetainedBlock | RetainedList, right: RetainedBlock | RetainedList,
+  list: Node | null): number {
+  const loose = list?.attrs.spelling?.tight === false;
+  const parent = list ? { sameList: true, loose }
+    : 'items' in right ? { sameList: false, loose: true,
+      marker: itemMarker(right.node, right.node.firstChild!, 0, listPattern(right.node, left.closing.openList)) }
+    : null;
+  const range = blockBoundary(right.node, left.closing, right.opening, parent);
+  if (!range) throw new RangeError('The units have no boundary that preserves their reading');
+  return constrainBoundary(requestedBoundary(left.node, right.node, list ? Number(loose) : 1), range);
+}
+
+/**
+ * Write a slice for the clipboard: in its own spelling, from no kept source. The clipboard is
+ * no file: where a paragraph standing alone would read as something else, its text is written
+ * with the backslash the tree would take (`foo` over `\\===`). Blocks are written with the
+ * edge mark and the writing options, as the file is; a slice inside one text is its characters
+ * (private-docs/deviations/zwsp-edge-mark.md).
+ *
+ * @param slice A slice of a document.
+ * @param from Where it was taken from: a value of a YAML sequence is written as an item of one, `- one`.
+ * @param options The writing options of the document it was taken from.
+ * @returns Its Markdown.
+ */
+export function unparseSlice(slice: Slice, from: ResolvedPos, options: unparse.Options): string {
+  let content = slice.content;
+  for (let open = Math.min(slice.openStart, slice.openEnd); open && content.childCount === 1; open--)
+    content = content.firstChild!.content;
+  if (content.firstChild?.isInline) return content.content.map(inlineNode).join('');
+  if (from.parent.type === schema.nodes.yamlSequence &&
+      content.content.every(node => node.type.isInGroup('yamlNode')))
+    content = Fragment.from(from.parent.type.create(null, content));
+  // The slice stands as a document of its own.
+  return new UnparseContext(true, options).sequence({
+    column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
+    parent: schema.nodes.document.create(null, content), index: 0, loose: true,
+  }, 1, false).body;
+}
+
+/** A field's text as written: under `trim`, without the spaces and tabs it starts with. */
+export function writtenFieldText(node: Node, options: unparse.Options): string {
+  const text = fieldSource(node);
+  return options.keepStartingSpaceOrTab === 'trim' ? text.replace(/^[ \t]+/, '') : text;
+}
+
+/** Whether `node` is a paragraph written with no text. */
+function emptyParagraph(node: Node, options: unparse.Options): boolean {
+  return node.type === schema.nodes.paragraph && (!node.content.size || !writtenFieldText(node, options));
+}
+
+/**
+ * The children of a parent where the option keeps empty paragraphs: those strictly between
+ * `first` and `last`. Under `keep-enclosed-with-zwsp` they are the bounds of the parent's first
+ * and last block that is not an empty paragraph; under `keep-non-final-with-zwsp`, everything
+ * before the document's last such block, and everything in any other parent. Only the empty
+ * stretches at the ends are looked at. Under the other options no child is kept this way.
+ */
+export class KeptChildren {
+  private constructor(readonly first: number, readonly last: number) {}
+
+  static of(parent: Node, options: unparse.Options): KeptChildren {
+    const { keepEmptyParagraph } = options;
+    if (keepEmptyParagraph === 'remove-all' || keepEmptyParagraph === 'keep-all-with-zwsp')
+      return new KeptChildren(-1, -1);
+    const nonFinal = keepEmptyParagraph === 'keep-non-final-with-zwsp';
+    if (nonFinal && parent.type !== schema.nodes.document) return new KeptChildren(-1, parent.childCount);
+    const edge = (index: number) => {
+      const child = parent.child(index);
+      return !child.type.isInGroup('block') || emptyParagraph(child, options);
+    };
+    let first = 0;
+    let last = parent.childCount - 1;
+    while (!nonFinal && first <= last && edge(first)) first++;
+    while (last >= first && edge(last)) last--;
+    return new KeptChildren(nonFinal ? -1 : first, last);
   }
 
-  /** Whether `node` is a paragraph written with no text. */
-  export function emptyParagraph(node: Node, options: Options): boolean {
-    return node.type === schema.nodes.paragraph && (!node.content.size || !fieldText(node, options));
-  }
+  has(index: number): boolean { return index > this.first && index < this.last; }
+}
 
-  /**
-   * The children of a parent where the option keeps empty paragraphs: those strictly between
-   * `first` and `last`. Under `keep-enclosed-with-zwsp` they are the bounds of the parent's first
-   * and last block that is not an empty paragraph; under `keep-non-final-with-zwsp`, everything
-   * before the document's last such block, and everything in any other parent. Only the empty
-   * stretches at the ends are looked at. Under the other options no child is kept this way.
-   */
-  export class Kept {
-    private constructor(readonly first: number, readonly last: number) {}
+/** The indices of the children of `parent`, from `from` on, that writing does not leave out. */
+export function writtenChildren(parent: Node, from: number, options: unparse.Options): number[] {
+  const kept = KeptChildren.of(parent, options);
+  const indices: number[] = [];
+  for (let index = from; index < parent.childCount; index++)
+    if (!dropsChild(parent, index, kept.has(index), indices.length > 0, options)) indices.push(index);
+  return indices;
+}
 
-    static of(parent: Node, options: Options): Kept {
-      const { keepEmptyParagraph } = options;
-      if (keepEmptyParagraph === 'remove-all' || keepEmptyParagraph === 'keep-all-with-zwsp') return new Kept(-1, -1);
-      const nonFinal = keepEmptyParagraph === 'keep-non-final-with-zwsp';
-      if (nonFinal && parent.type !== schema.nodes.document) return new Kept(-1, parent.childCount);
-      const edge = (index: number) => {
-        const child = parent.child(index);
-        return !child.type.isInGroup('block') || emptyParagraph(child, options);
-      };
-      let first = 0;
-      let last = parent.childCount - 1;
-      while (!nonFinal && first <= last && edge(first)) first++;
-      while (last >= first && edge(last)) last--;
-      return new Kept(nonFinal ? -1 : first, last);
-    }
-
-    has(index: number): boolean { return index > this.first && index < this.last; }
-  }
-
-  /** The indices of the children of `parent`, from `from` on, that writing does not leave out. */
-  export function writtenChildren(parent: Node, from: number, options: Options): number[] {
-    const kept = Kept.of(parent, options);
-    const indices: number[] = [];
-    for (let index = from; index < parent.childCount; index++)
-      if (!dropsChild(parent, index, kept.has(index), indices.length > 0, options)) indices.push(index);
-    return indices;
-  }
-
-  /** Whether the writing option leaves this child out, including its margin and boundary. */
-  export function dropsChild(parent: Node, index: number, kept: boolean, preceded: boolean, options: Options): boolean {
-    if (options.keepEmptyParagraph === 'keep-all-with-zwsp' ||
-      !emptyParagraph(parent.child(index), options) || expressesEmpty(parent, index)) return false;
-    if (kept) return false;
-    if (preceded || index + 1 === parent.childCount) return true;
-    const next = parent.child(index + 1);
-    if (next.type !== schema.nodes.paragraph &&
-      !(next.type === schema.nodes.heading && next.attrs.form === 'setext')) return true;
-    const taskMarker = parent.type === schema.nodes.listItem && parent.attrs.checked === null;
-    const calloutDeclaration = parent.type === schema.nodes.blockQuote;
-    if (!taskMarker && !calloutDeclaration) return true;
-    const reading = transduce(fieldText(next, options), {
-      phrasing: 'paragraph', settle: true, firstInListItem: taskMarker, firstInBlockQuote: calloutDeclaration,
-    }, Bindings.none);
-    // A Setext heading keeps its item reading through the existing marker-line repair.
-    // A declaration first in a quote has no such repair, whichever paragraph-content block holds it.
-    return reading.kind !== 'inline' || !reading.children.some(child => child.type === 'calloutDeclaration' ||
-      child.type === 'taskMarker' && next.type === schema.nodes.paragraph);
-  }
-
-  /** Write a block as the only block of a file, as an export shows its source. */
-  export function alone(node: Node): Unparsed {
-    return unparse(node, {
-      column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
-      parent: schema.nodes.document.create(null, node), index: 0, loose: true,
-    }, defaults);
-  }
-
-  /**
-   * The blank lines between two adjacent units: what their nodes record, kept within the range
-   * that preserves both readings.
-   *
-   * @param list The list both are items of, or null at the top level.
-   */
-  export function separator(left: RetainedBlock | RetainedList, right: RetainedBlock | RetainedList,
-    list: Node | null): number {
-    const loose = list?.attrs.spelling?.tight === false;
-    const parent = list ? { sameList: true, loose }
-      : 'items' in right ? { sameList: false, loose: true,
-        marker: itemMarker(right.node, right.node.firstChild!, 0, listPattern(right.node, left.closing.openList)) }
-      : null;
-    const range = blockBoundary(right.node, left.closing, right.opening, parent);
-    if (!range) throw new RangeError('The units have no boundary that preserves their reading');
-    return constrainBoundary(requestedBoundary(left.node, right.node, list ? Number(loose) : 1), range);
-  }
-
-  /**
-   * Write a slice for the clipboard: in its own spelling, from no kept source. The clipboard is
-   * no file: where a paragraph standing alone would read as something else, its text is written
-   * with the backslash the tree would take (`foo` over `\\===`). Blocks are written with the
-   * edge mark and the writing options, as the file is; a slice inside one text is its characters
-   * (private-docs/deviations/zwsp-edge-mark.md).
-   *
-   * @param slice A slice of a document.
-   * @param from Where it was taken from: a value of a YAML sequence is written as an item of one, `- one`.
-   * @param options The writing options of the document it was taken from.
-   * @returns Its Markdown.
-   */
-  export function slice(slice: Slice, from: ResolvedPos, options: Options): string {
-    let content = slice.content;
-    for (let open = Math.min(slice.openStart, slice.openEnd); open && content.childCount === 1; open--)
-      content = content.firstChild!.content;
-    if (content.firstChild?.isInline) return content.content.map(inlineNode).join('');
-    if (from.parent.type === schema.nodes.yamlSequence &&
-        content.content.every(node => node.type.isInGroup('yamlNode')))
-      content = Fragment.from(from.parent.type.create(null, content));
-    // The slice stands as a document of its own.
-    return new UnparseContext(true, options).sequence({
-      column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
-      parent: schema.nodes.document.create(null, content), index: 0, loose: true,
-    }, 1, false).body;
-  }
+/** Whether the writing option leaves this child out, including its margin and boundary. */
+export function dropsChild(parent: Node, index: number, kept: boolean, preceded: boolean,
+  options: unparse.Options): boolean {
+  if (options.keepEmptyParagraph === 'keep-all-with-zwsp' ||
+    !emptyParagraph(parent.child(index), options) || expressesEmpty(parent, index)) return false;
+  if (kept) return false;
+  if (preceded || index + 1 === parent.childCount) return true;
+  const next = parent.child(index + 1);
+  if (next.type !== schema.nodes.paragraph &&
+    !(next.type === schema.nodes.heading && next.attrs.form === 'setext')) return true;
+  const taskMarker = parent.type === schema.nodes.listItem && parent.attrs.checked === null;
+  const calloutDeclaration = parent.type === schema.nodes.blockQuote;
+  if (!taskMarker && !calloutDeclaration) return true;
+  const reading = dropsChildParser.transduce(writtenFieldText(next, options), {
+    phrasing: 'paragraph', settle: true, firstInListItem: taskMarker, firstInBlockQuote: calloutDeclaration,
+  });
+  // A Setext heading keeps its item reading through the existing marker-line repair.
+  // A declaration first in a quote has no such repair, whichever paragraph-content block holds it.
+  return reading.kind !== 'inline' || !reading.children.some(child => child.type === 'calloutDeclaration' ||
+    child.type === 'taskMarker' && next.type === schema.nodes.paragraph);
 }
 
 /** Settings shared by a walk over the supplied document nodes. */
@@ -226,12 +230,12 @@ class UnparseContext {
       case schema.nodes.rawFrontMatter:
         return written(frontMatterSource(node), 'thematicBreak', column, true);
       case schema.nodes.yamlFrontMatter:
-        return written(yaml.frontMatter(node), 'thematicBreak', column, true);
+        return written(unparseFrontMatter(node), 'thematicBreak', column, true);
       case schema.nodes.yamlMapping:
       case schema.nodes.yamlSequence:
       case schema.nodes.yamlScalar:
       case schema.nodes.yamlPair:
-        return written(yaml(node), 'text', column, false);
+        return written(unparseYAML(node), 'text', column, false);
       default:
         throw new RangeError(`No Markdown unparser for ${node.type.name}`);
     }
@@ -243,7 +247,7 @@ class UnparseContext {
    * @param framed Whether the parent's leading blank lines are written before them.
    */
   sequence(first: DisambiguationContext, defaultGap: number, framed: boolean,
-    children = unparse.writtenChildren(first.parent, first.index, this.options)): Unparsed {
+    children = writtenChildren(first.parent, first.index, this.options)): Unparsed {
     const parts: string[] = [];
     let opening: Opening | null = null;
     let closing = first.preceding;
@@ -274,7 +278,7 @@ class UnparseContext {
   }
 
   private paragraph(node: Node, context: DisambiguationContext, margin: string): Unparsed {
-    let text = unparse.fieldText(node, this.options);
+    let text = writtenFieldText(node, this.options);
     if (this.clipboard) {
       for (const repair of repairPhrasing(text, 'paragraph', { escapeBlocks: true }).reverse())
         text = text.slice(0, repair.start) + repair.insert + text.slice(repair.end);
@@ -297,7 +301,7 @@ class UnparseContext {
   }
 
   private heading(node: Node, margin: string, column: number): Unparsed {
-    const text = unparse.fieldText(node, this.options);
+    const text = writtenFieldText(node, this.options);
     const converted = !text && node.attrs.form === 'setext' &&
       this.options.keepEmptySetextHeading === 'convert-to-atx-heading';
     const spelling: HeadingSpelling | null = converted ? null : node.attrs.spelling;
@@ -421,7 +425,7 @@ class UnparseContext {
     const spelling: FootnoteDefinitionSpelling | null = node.attrs.spelling;
     const head = '[^' + fieldSource(node.child(0)) + ']:';
     const gap: string = spelling?.whitespaceAfterLabel ?? ' ';
-    const children = unparse.writtenChildren(node, 1, this.options);
+    const children = writtenChildren(node, 1, this.options);
     if (!children.length) return written(margin + head, 'footnoteDefinition', context.column + margin.length,
       false, { ...Closing.none, continuation: context.laterColumn + 4 });
     const first = node.child(children[0]!);
@@ -458,7 +462,7 @@ class UnparseContext {
     const lines: string[] = [];
     for (let index = 0; index < rows.length; index++) {
       const cells = rows[index]!.content.content.map((cell, column) => {
-        const text = unparse.fieldText(cell.child(0), this.options);
+        const text = writtenFieldText(cell.child(0), this.options);
         const edge = text && needsEdgeMark(text, 'tableCell') ? '\u200b' : '';
         let result = (padding === 'none' ? '' : ' ') + edge + text;
         if (padding === 'aligned') result += ' '.repeat(widths[column]! - measureWidth(text).width);
@@ -495,7 +499,7 @@ class QuoteContext {
 
   /** Write the owner's children from `from` on at the quote's columns, retaining the protective-prefix retry. */
   write(from: number): Unparsed {
-    const children = unparse.writtenChildren(this.owner, from, this.writer.options);
+    const children = writtenChildren(this.owner, from, this.writer.options);
     const nodes = children.map(index => this.owner.child(index));
     if (!nodes.length) return { body: from ? '' : bareQuote(this.prefixes.first), opening: null, closing: Closing.none };
     const parts: string[] = [];
@@ -576,7 +580,7 @@ class ItemContext {
     this.gap = node.attrs.spelling?.whitespaceAfterMarker || ' ';
     this.check = taskCheck(node.attrs.checked);
     this.head = this.marker + this.gap + this.check;
-    this.children = unparse.writtenChildren(node, 0, writer.options);
+    this.children = writtenChildren(node, 0, writer.options);
   }
 
   write(): Unparsed {

@@ -10,7 +10,29 @@
 
 // Note: this file is authored manually, not generated from `index.js`.
 
-import type { Bindings, Target } from '../syntax/reading.js';
+/**
+ * What a text is read for: `standard`, a plain syntax tree; `editor`, the tree the editor's
+ * content is made from, which holds what the editor holds as text (`ATXClosingSequenceSyntax`).
+ */
+export type Target = 'standard' | 'editor';
+
+/**
+ * The labels defined elsewhere in the document, normalized, which references in the text may
+ * resolve to. Without them, `[a][b]` is not a link.
+ */
+export interface Bindings {
+  /** The first definition of each normalized label. */
+  readonly definitions: ReadonlyMap<string, Bindings.Definition>;
+  /** The normalized labels that have a footnote definition. */
+  readonly footnotes: ReadonlySet<string>;
+}
+
+export namespace Bindings {
+  export interface Definition {
+    readonly destination: string;
+    readonly title: string | null;
+  }
+}
 
 /**
  * A character code.
@@ -932,7 +954,15 @@ export interface ParseOptions {
   /**
    * Array of syntax extensions (default: `[]`).
    */
-  extensions?: Array<Extension> | null | undefined;
+  extensions?: ReadonlyArray<Extension> | null | undefined;
+  /** Kagami: pre-combined construct tables for a fixed grammar. */
+  constructs?: FullNormalizedExtension | undefined;
+  /** Kagami: use CJK-friendly inline delimiter boundaries (default: `false`). */
+  cjkFriendly?: boolean | undefined;
+  /** Kagami: what the text is read for (default: `'standard'`). */
+  target?: Target | undefined;
+  /** Kagami: bindings outside this reading, looked up only at a reference. */
+  bindings?: Bindings | undefined;
 }
 
 /**
@@ -948,14 +978,19 @@ export interface ParseContext {
   /** Kagami: attempts survive tokenizer rollback, since misses are dependencies too. */
   references: Array<ReferenceQuestion>;
 
-  /** Apply the explicitly enabled CJK delimiter extension. */
-  cjkFriendly?: boolean;
-  /** Kagami: what the text is read for. */
-  target?: Target | undefined;
   /**
    * All constructs.
    */
-  constructs: FullNormalizedExtension;
+  readonly constructs: FullNormalizedExtension;
+
+  /** Whether this reading uses CJK-friendly inline delimiter boundaries. */
+  readonly cjkFriendly: boolean;
+
+  /** Kagami: what the text is read for. */
+  readonly target: Target;
+
+  /** Kagami: bindings outside this reading, looked up only at a reference. */
+  readonly bindings: Bindings;
 
   /**
    * List of defined identifiers.
@@ -966,9 +1001,6 @@ export interface ParseContext {
    * Registered GFM footnote identifiers.
    */
   gfmFootnotes?: Array<string> | undefined;
-
-  /** Kagami: bindings outside this reading, looked up only at a reference. */
-  bindings?: Bindings | undefined;
 
   /**
    * Map of line numbers to whether they are lazy (as opposed to the line before

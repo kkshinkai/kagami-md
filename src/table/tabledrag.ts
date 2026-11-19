@@ -6,7 +6,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { Node } from 'prosemirror-model';
-import { tables } from './table.js';
+import { moveTableColumn, moveTableRow } from './table.js';
 import type { TableHandles } from './tablehandles.js';
 import type { TableView } from './tableview.js';
 
@@ -264,7 +264,7 @@ export class TableDrag {
     }
     if (drag.boundary === null) return;
     const to = drag.boundary > drag.from ? drag.boundary - 1 : drag.boundary;
-    const move = drag.axis === 'row' ? tables.moveTableRow : tables.moveTableColumn;
+    const move = drag.axis === 'row' ? moveTableRow : moveTableColumn;
     if (move(drag.from, to)(this.owner.view.state, this.owner.view.dispatch, this.owner.view)) this.owner.view.focus();
   }
 

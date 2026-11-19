@@ -6,9 +6,9 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { Node } from 'prosemirror-model';
-import { Bindings, parseBlocks, parseFile, TableCellSyntax } from '../syntax/index.js';
+import { TableCellSyntax, type Parser } from '../syntax/index.js';
 import { children, Correspondence, type SourcePiece } from '../parse/tree.js';
-import { unparse } from '../unparse/unparse.js';
+import { writtenChildren, writtenFieldText, type unparse } from '../unparse/unparse.js';
 import { fieldSource } from '../parse/field.js';
 import type { EditorLoc, SourceLoc } from './location.js';
 import { RetainedBlock, RetainedList, type RetainedDoc } from './retained.js';
@@ -31,7 +31,8 @@ interface Place { readonly start: number; readonly end: number; readonly editor:
 
 /** An outside query reads only the block holding its location. */
 export class SourceMap {
-  constructor(readonly tree: RetainedDoc, readonly options: unparse.Options) {}
+  constructor(readonly tree: RetainedDoc, readonly options: unparse.Options,
+    readonly parser: Parser) {}
 
   sourceToEditor(location: SourceLoc): EditorLoc {
     check(location, this.tree.length);
@@ -140,8 +141,10 @@ export class SourceMap {
     const source = address.source + block.leading.length;
     // The file's first unit reads with front matter. The mark keeps a first U+FEFF of the
     // body's text a character; parseFile excludes the supplied mark from its coordinates.
-    const blocks = source === 0 ? [] : parseBlocks(text, { target: 'editor' }, Bindings.none);
-    const file = blocks.length ? null : parseFile('\ufeff' + text, { target: 'editor' }).document;
+    const blocks = source === 0 ? []
+      : this.parser.parseBlocks(text);
+    const file = blocks.length ? null
+      : this.parser.parseFile('\ufeff' + text).document;
     const roots = file?.frontMatter ? [file.frontMatter] : file?.children ?? blocks;
     const items = address.item && roots.length === 1 ? children(roots[0]!) : roots;
     const node = block.node;
@@ -204,7 +207,7 @@ class Unit {
     const first = reading.pieces?.find(piece => piece.length);
     const character = first ? this.text.charCodeAt(first.start) : -1;
     if (character === 32 || character === 9) return 0;
-    return fieldSource(node).length - unparse.fieldText(node, this.options).length;
+    return fieldSource(node).length - writtenFieldText(node, this.options).length;
   }
   /**
    * Omitted children have no syntax node; their positions meet the next written child. The first
@@ -216,7 +219,7 @@ class Unit {
     if (reading.emptyAt !== null || node.isTextblock || actual.length === node.childCount ||
       reading.syntax instanceof TableCellSyntax ||
       this.options.keepEmptyParagraph === 'keep-all-with-zwsp') return reading.children(node);
-    const written = unparse.writtenChildren(node, 0, this.options);
+    const written = writtenChildren(node, 0, this.options);
     if (written.length === node.childCount) return reading.children(node);
     const result: Correspondence[] = [];
     let body = reading.suppliedBody();

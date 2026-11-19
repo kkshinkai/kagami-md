@@ -13,10 +13,7 @@ import { preprocess } from '../kernel/preprocess.js';
 
 /** Run a reader query on its own text, with each line starting at a physical column. */
 export function queryEvents(text: string, initial: InitialConstruct, column = 0): Array<Event> {
-  const parser = parse();
-  parser.constructs = wholeDocument;
-  parser.cjkFriendly = true;
-  parser.target = 'editor';
+  const parser = parse({ constructs: wholeDocument, cjkFriendly: true, target: 'editor' });
   const tokenizer = createTokenizer(parser, initial);
   return tokenizer.write(preprocess({ atDocumentStart: false, column })(text, undefined, true));
 }

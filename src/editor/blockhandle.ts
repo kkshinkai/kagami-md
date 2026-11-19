@@ -11,7 +11,7 @@ import { canRunCommand } from '../state/input.js';
 import { BlockSelection, blockRangeForHandle, type BlockRange } from '../state/selection.js';
 import { localScale, positionOverlay, unionRects } from './coords.js';
 import type { BlockLayout, HandleLane, RenderedBlock } from './blockdrag.js';
-import { input } from './input.js';
+import { routeHistoryKey } from './input.js';
 
 /** A draggable block button whose bar expands inside a stable hit area on hover. */
 export class BlockHandle {
@@ -44,7 +44,7 @@ export class BlockHandle {
     grabber.setAttribute('aria-hidden', 'true');
     this.button.onclick = event => this.select(event.shiftKey);
     this.button.onkeydown = event => {
-      if (!this.view.isDestroyed && input.historyKey(this.view, event)) event.stopPropagation();
+      if (!this.view.isDestroyed && routeHistoryKey(this.view, event)) event.stopPropagation();
     };
     this.dom.addEventListener('pointerenter', this.enter);
     this.dom.addEventListener('pointerleave', this.leave);

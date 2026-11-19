@@ -9,10 +9,11 @@ import { schema } from '../types/schema.js';
 import { CONCEALED, presentationClasses } from '../editor/reveal.js';
 import { DOMSerializer, type Mark, type Node } from 'prosemirror-model';
 import type { EditorView } from 'prosemirror-view';
-import { callout, type Callout } from './callout.js';
-import { frontmatter } from './frontmatter.js';
-import { math } from './math.js';
-import { image } from './image.js';
+import { calloutIcons, calloutLabels } from './callout.js';
+import type { KagamiMD } from '../editor/editor.js';
+import { frontmatterTypeIcons, frontmatterValueType } from './frontmatter.js';
+import { mathFormulas, mathPreview } from './math.js';
+import { imageWidget, readImages } from './image.js';
 import { selectedBlocks, type BlockRange } from '../state/selection.js';
 import { localScale } from '../editor/coords.js';
 
@@ -106,8 +107,8 @@ class PreviewContext {
   }
 
   inline(node: Node, pos: number, target: HTMLElement) {
-    const images = image.read(node, pos + 1);
-    const formulas = math.formulas(node, pos + 1);
+    const images = readImages(node, pos + 1);
+    const formulas = mathFormulas(node, pos + 1);
     const imageNodes = [
       ...(this.original(pos)?.querySelectorAll<HTMLImageElement>('img.md-image-object') ?? []),
     ];
@@ -146,7 +147,7 @@ class PreviewContext {
       } else container.append(this.serializer.serializeNode(child, { document: this.document }));
       for (const formula of formulas.filter((formula) => formula.to === start + child.nodeSize)) {
         while (active.length) container = active.pop()!.parent;
-        const preview = math.preview(formula.value, false, this.document);
+        const preview = mathPreview(formula.value, false, this.document);
         const at = this.view.domAtPos(formula.from, 1).node;
         const source = at.nodeType === 1 ? (at as HTMLElement) : at.parentElement!;
         preview.classList.toggle('md-math-live-preview', !source.closest(`.${CONCEALED}`));
@@ -154,7 +155,7 @@ class PreviewContext {
       }
       for (const info of images.filter((image) => image.to === start + child.nodeSize)) {
         while (active.length) container = active.pop()!.parent;
-        const widget = image.widget(this.document, info);
+        const widget = imageWidget(this.document, info);
         const source = imageNodes[images.indexOf(info)];
         if (source) {
           const bounds = source.getBoundingClientRect();
@@ -213,11 +214,11 @@ class PreviewContext {
         dom = this.element('div', 'md-callout-heading');
         content = this.element('span', 'md-callout-title');
         content.dataset.calloutTitle = 'true';
-        const kind = parent!.attrs.calloutType as Callout.Kind;
-        if (!node.content.size) content.dataset.placeholder = callout.labels[kind];
+        const type = parent!.attrs.calloutType as KagamiMD.CalloutType;
+        if (!node.content.size) content.dataset.placeholder = calloutLabels[type];
         const mount = this.element('span', 'md-callout-type-control');
         const button = this.element('button', 'callout-type-button');
-        button.append(this.icon(callout.icons[kind]));
+        button.append(this.icon(calloutIcons[type]));
         mount.append(button);
         dom.append(mount, content);
         break;
@@ -229,7 +230,7 @@ class PreviewContext {
         const source = this.element('pre', 'md-math-source');
         content = this.element('code');
         source.append(content);
-        dom.append(math.preview(node.textContent, true, this.document), source);
+        dom.append(mathPreview(node.textContent, true, this.document), source);
         break;
       }
       case schema.nodes.table: {
@@ -269,8 +270,8 @@ class PreviewContext {
         const mount = this.element('span', 'md-yaml-type');
         const button = this.element('button', 'frontmatter-type-button');
         const value = node.lastChild!;
-        const type = frontmatter.valueType(value);
-        button.append(this.icon(frontmatter.typeIcons[type]));
+        const type = frontmatterValueType(value);
+        button.append(this.icon(frontmatterTypeIcons[type]));
         mount.append(button);
         content = this.element('div', 'md-yaml-entry-content');
         dom.replaceChildren(mount, content);

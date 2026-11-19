@@ -39,7 +39,7 @@ interface HTMLSpecial {
 }
 
 /** An HTML token and the document position of the input it was read from. */
-interface HTMLOccurrence {
+export interface HTMLOccurrence {
   readonly token: HTMLToken;
   readonly base: number;
   readonly lineBreak: boolean;
@@ -155,34 +155,32 @@ class HTMLReader {
 function readHTML(text: string): HTMLToken[] {
   const result: HTMLToken[] = [];
   for (let at = text.indexOf('<'); at >= 0;) {
-    const token = readHTML.token(text, at);
+    const token = readHTMLToken(text, at);
     if (token) result.push(token);
     at = text.indexOf('<', token ? token.to : at + 1);
   }
   return result;
 }
 
-namespace readHTML {
-  /** Read one token beginning at the given offset. */
-  export function token(text: string, from: number): HTMLToken | null {
-    return new HTMLReader(text, from).read();
-  }
+/** Read one token beginning at the given offset. */
+function readHTMLToken(text: string, from: number): HTMLToken | null {
+  return new HTMLReader(text, from).read();
+}
 
-  /** Raw-text blocks expose their opening and closing tags only. */
-  export function block(text: string): HTMLToken[] {
-    const from = text.search(/\S/);
-    const first = from < 0 ? null : token(text, from);
-    if (!first || first.kind !== 'open' || !rawText.has(first.name)) return readHTML(text);
-    const result = [first];
-    for (let at = text.indexOf('</', first.to); at >= 0; at = text.indexOf('</', at + 2)) {
-      const closing = token(text, at);
-      if (closing?.kind === 'close' && rawText.has(closing.name)) {
-        result.push(closing);
-        break;
-      }
+/** Raw-text blocks expose their opening and closing tags only. */
+function readHTMLBlock(text: string): HTMLToken[] {
+  const from = text.search(/\S/);
+  const first = from < 0 ? null : readHTMLToken(text, from);
+  if (!first || first.kind !== 'open' || !rawText.has(first.name)) return readHTML(text);
+  const result = [first];
+  for (let at = text.indexOf('</', first.to); at >= 0; at = text.indexOf('</', at + 2)) {
+    const closing = readHTMLToken(text, at);
+    if (closing?.kind === 'close' && rawText.has(closing.name)) {
+      result.push(closing);
+      break;
     }
-    return result;
   }
+  return result;
 }
 
 /** Read a textblock's parser-marked HTML runs at its document position. */
@@ -191,7 +189,7 @@ export function htmlTokens(textblock: Node, position: number): HTMLOccurrence[] 
   const { nodes, marks } = textblock.type.schema;
   if (textblock.type === nodes.htmlBlock || textblock.type === nodes.htmlTagBlock) {
     const text = fieldSource(textblock);
-    for (const token of readHTML.block(text)) {
+    for (const token of readHTMLBlock(text)) {
       result.push({
         token, base: position + 1,
         lineBreak: textblock.type === nodes.htmlTagBlock && textblock.attrs.tag === 'htmlLineBreak'
@@ -221,10 +219,4 @@ export function htmlTokens(textblock: Node, position: number): HTMLOccurrence[] 
     if (child) offset += child.nodeSize;
   }
   return result;
-}
-
-export namespace htmlTokens {
-  export function isLineBreak(occurrence: HTMLOccurrence): boolean {
-    return occurrence.lineBreak;
-  }
 }

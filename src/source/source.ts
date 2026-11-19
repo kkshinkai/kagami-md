@@ -6,22 +6,23 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import {
-  BulletListSyntax, OrderedListSyntax, parseFile,
-  type ReferenceLabels, type BlockSyntax, type DocumentSyntax, type FrontMatterSyntax, type VirtualFile,
+  BulletListSyntax, OrderedListSyntax, Parser,
+  type BlockSyntax, type DocumentSyntax, type FrontMatterSyntax,
+  type ReferenceLabels, type VirtualFile,
 } from '../syntax/index.js';
 import type { Node, Schema } from 'prosemirror-model';
 import { Plugin, PluginKey, type EditorState, type EditorStateConfig, type Transaction } from 'prosemirror-state';
 import { Mapping, type Step } from 'prosemirror-transform';
-import { parse } from '../parse/parse.js';
+import { parseBlock, parseFrontMatter, parseNode } from '../parse/parse.js';
 import { readBody } from '../parse/edges.js';
 import { Closing } from '../unparse/unparsed.js';
-import { unparse } from '../unparse/unparse.js';
+import type { unparse } from '../unparse/unparse.js';
 import { schema } from '../types/schema.js';
 import type { EditorLoc, SourceLoc } from './location.js';
 import { SourceMap } from './map.js';
 import { RetainedBlock, RetainedDoc, RetainedList } from './retained.js';
 import { Sequence } from './sequence.js';
-import { sweep } from './sweep.js';
+import { sweep, sweepDocument } from './sweep.js';
 
 /** The immutable physical conventions of a file. */
 export type FileProperties = Readonly<Omit<VirtualFile, 'document' | 'text'>>;
@@ -32,6 +33,8 @@ interface InitializedDocument {
   readonly source: Source;
   readonly readings: ReadonlyMap<Node, ReferenceLabels>;
 }
+
+const defaultParser = new Parser({ target: 'editor' });
 
 /**
  * A state's source: the file as the document's units, current after every settled edit. An edit
@@ -44,19 +47,22 @@ export class Source {
     readonly doc: Node,
     readonly properties: FileProperties,
     readonly options: unparse.Options,
+    private readonly parser: Parser,
     /** Current after every settled edit; never computed on reading. */
     readonly tree: RetainedDoc,
     private readonly revision: object,
     private readonly edits: readonly Transaction[],
   ) {}
 
-  static create(doc: Node, properties: FileProperties, options: unparse.Options, tree: RetainedDoc): Source {
-    return new Source(doc, properties, options, tree, {}, []);
+  static create(doc: Node, properties: FileProperties, options: unparse.Options, tree: RetainedDoc,
+    parser: Parser = defaultParser): Source {
+    return new Source(doc, properties, options, parser, tree, {}, []);
   }
 
   /** The source of a document that has no file, written once. */
-  static write(doc: Node, properties: FileProperties, options: unparse.Options): Source {
-    return Source.create(doc, properties, options, sweep.write(doc, properties, options).tree);
+  static write(doc: Node, properties: FileProperties, options: unparse.Options,
+    parser: Parser = defaultParser): Source {
+    return Source.create(doc, properties, options, sweepDocument(doc, properties, options).tree, parser);
   }
 
   /** Whether every transaction of the edit has been swept. */
@@ -69,7 +75,7 @@ export class Source {
 
   /** Keep a document-changing transaction for the edit's settlement. */
   update(tr: Transaction): Source {
-    return tr.docChanged ? new Source(this.doc, this.properties, this.options, this.tree, this.revision, this.edits.concat(tr))
+    return tr.docChanged ? new Source(this.doc, this.properties, this.options, this.parser, this.tree, this.revision, this.edits.concat(tr))
       : this;
   }
 
@@ -84,7 +90,7 @@ export class Source {
     }
     const doc = this.edits[this.edits.length - 1]!.doc;
     const swept = sweep(this, doc, steps, mapping);
-    return new Source(doc, this.properties, this.options, swept.tree, swept.textChanged ? {} : this.revision, []);
+    return new Source(doc, this.properties, this.options, this.parser, swept.tree, swept.textChanged ? {} : this.revision, []);
   }
 
   /** Whether no edit between the two changed the file's text. */
@@ -99,13 +105,13 @@ export class Source {
   /** Expensive, and for the outside only (private-docs/concepts/near-red-green.md). */
   sourceToEditor(location: SourceLoc): EditorLoc {
     this.checkSettled();
-    return new SourceMap(this.tree, this.options).sourceToEditor(location);
+    return new SourceMap(this.tree, this.options, this.parser).sourceToEditor(location);
   }
 
   /** Expensive, and for the outside only (private-docs/concepts/near-red-green.md). */
   editorToSource(location: EditorLoc): SourceLoc {
     this.checkSettled();
-    return new SourceMap(this.tree, this.options).editorToSource(location);
+    return new SourceMap(this.tree, this.options, this.parser).editorToSource(location);
   }
 
   private checkSettled(): void {
@@ -115,29 +121,29 @@ export class Source {
 
 const sourceKey = new PluginKey<Source>('source');
 
-/** Install the source as a field updated by native transactions. */
-export function source(): Plugin<Source> {
-  return new Plugin({
-    key: sourceKey,
-    state: {
-      init(config) {
-        const initial = (config as source.Config).source;
-        if (!initial) throw new RangeError('The state needs its initial source');
-        return initial;
-      },
-      apply: (tr, previous) => tr.getMeta(sourceKey) ? previous.settle() : previous.update(tr),
-    },
-  });
-}
-
-export namespace source {
+export namespace Source {
   /** The original file accompanies its parsed document through native state initialization. */
   export interface Config extends EditorStateConfig { readonly source: Source; }
+
+  /** Install the source as a field updated by native transactions. */
+  export function plugin(): Plugin<Source> {
+    return new Plugin({
+      key: sourceKey,
+      state: {
+        init(config) {
+          const initial = (config as Config).source;
+          if (!initial) throw new RangeError('The state needs its initial source');
+          return initial;
+        },
+        apply: (tr, previous) => tr.getMeta(sourceKey) ? previous.settle() : previous.update(tr),
+      },
+    });
+  }
 
   /**
    * Settle the source once every correction of an edit has run. Correction hooks run in
    * rounds and only the state owner knows when the last has run, so it settles the source after
-   * the native loop, as `history.finish` closes the edit's event.
+   * the native loop, as `finishHistory` closes the edit's event.
    */
   export function settle(state: EditorState): EditorState {
     if (get(state).settled) return state;
@@ -155,26 +161,26 @@ export namespace source {
 }
 
 /** Read a file once, constructing its editor nodes and retained units together. */
-export function read(markdown: string, options: unparse.Options): InitializedDocument {
-  const file = parseFile(markdown, { target: 'editor' });
-  return read.syntax(file.document, file.text, schema, Object.freeze({
+export function read(markdown: string, options: unparse.Options,
+  parser: Parser = defaultParser): InitializedDocument {
+  const file = parser.parseFile(markdown);
+  return readSyntax(file.document, file.text, schema, Object.freeze({
     byteOrderMark: file.byteOrderMark,
     lineEnding: file.lineEnding,
     endsWithLineEnding: file.endsWithLineEnding,
-  }), options);
+  }), options, parser);
 }
 
-export namespace read {
-  /** Construct source and editor content from an existing file reading. */
-  export function syntax(syntax: DocumentSyntax, text: string, schema: Schema,
-    properties: FileProperties, options: unparse.Options): InitializedDocument {
-    return new ReadContext(text, schema).document(syntax, properties, options);
-  }
+/** Construct source and editor content from an existing file reading. */
+export function readSyntax(document: DocumentSyntax, text: string, schema: Schema,
+  properties: FileProperties, options: unparse.Options,
+  parser: Parser = defaultParser): InitializedDocument {
+  return new ReadContext(text, schema, parser).document(document, properties, options);
 }
 
 /** The paired source and editor construction shares the syntax's ownership cuts. */
 class ReadContext {
-  constructor(readonly text: string, readonly schema: Schema) {}
+  constructor(readonly text: string, readonly schema: Schema, readonly parser: Parser) {}
 
   document(syntax: DocumentSyntax, properties: FileProperties, options: unparse.Options): InitializedDocument {
     const fields = new Map<Node, ReferenceLabels>();
@@ -182,17 +188,17 @@ class ReadContext {
     const children: Node[] = [];
     if (syntax.frontMatter) {
       readings.push(syntax.frontMatter);
-      children.push(parse.frontMatter(syntax.frontMatter, this.schema));
+      children.push(parseFrontMatter(syntax.frontMatter, this.schema));
     }
     for (const block of syntax.children) {
       readings.push(block);
-      children.push(parse.block(block, this.text, this.schema, fields));
+      children.push(parseBlock(block, this.text, this.schema, fields));
     }
     if (!syntax.children.length) {
       readings.push(null);
       children.push(this.schema.nodes.paragraph.createChecked());
     }
-    const doc = parse.node(syntax, children, this.schema);
+    const doc = parseNode(syntax, children, this.schema);
     const units: (RetainedBlock | RetainedList)[] = [];
     for (let element = 0; element < readings.length; element++) {
       const block = readings[element]!;
@@ -203,7 +209,7 @@ class ReadContext {
     const from = syntax.firstChild?.start ?? syntax.end - syntax.trailing;
     const to = syntax.lastChild?.end ?? from;
     const tree = new RetainedDoc(this.text.slice(0, from), Sequence.of(units), this.text.slice(to));
-    const source = Source.create(doc, properties, options, tree);
+    const source = Source.create(doc, properties, options, tree, this.parser);
     return { doc, source, readings: fields };
   }
 

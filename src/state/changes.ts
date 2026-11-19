@@ -66,9 +66,7 @@ export function changedRanges(steps: readonly Step[], mapping: Mapping): Change[
   return merged;
 }
 
-export namespace changedRanges {
-  /** The ranges a batch of transactions changed, in the document before the first and after the last. */
-  export function of(transactions: readonly Transaction[]): Change[] {
-    return changedRanges(transactions.flatMap(tr => tr.steps), transactionMapping(transactions));
-  }
+/** The ranges a batch of transactions changed, in the document before the first and after the last. */
+export function transactionChangedRanges(transactions: readonly Transaction[]): Change[] {
+  return changedRanges(transactions.flatMap(tr => tr.steps), transactionMapping(transactions));
 }

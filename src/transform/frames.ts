@@ -17,17 +17,74 @@ export function joinAt(tr: Transform, pos: number): void {
   const at = tr.doc.resolve(pos);
   const before = at.nodeBefore;
   const after = at.nodeAfter;
-  if (!before || !after || before.type !== after.type || !canJoin(tr.doc, pos))
+  const { nodes } = tr.doc.type.schema;
+  const compatible = before?.type === after?.type ||
+    before?.type === nodes.heading && after?.type === nodes.paragraph;
+  if (!before || !after || !compatible || !canJoin(tr.doc, pos))
     throw new RangeError('Cannot join these blocks');
   const start = pos - before.nodeSize;
-  tr.join(pos);
-  let spelling = joined(before.type, before.attrs.spelling, after.attrs.spelling);
+  const closing = atxClosing(before);
+  if (!closing) {
+    tr.join(pos);
+  } else if (after.type === nodes.heading) {
+    const removed = before.content.size - closing.separatorStart;
+    tr.delete(start + 1 + closing.separatorStart, start + 1 + before.content.size);
+    tr.join(pos - removed);
+  } else if (after.type === nodes.paragraph && after.content.size > 0) {
+    const closingText = before.textBetween(closing.closingFrom, before.content.size, '\n', '\n');
+    const separator = before.textBetween(closing.separatorStart, closing.closingFrom, '\n', '\n');
+    const removed = before.content.size - closing.separatorStart;
+    let firstLineEnd = after.content.size;
+    after.forEach((child, offset) => {
+      if (child.type === nodes.lineEnding && firstLineEnd === after.content.size) firstLineEnd = offset;
+    });
+    tr.delete(start + 1 + closing.separatorStart, start + 1 + before.content.size);
+    tr.join(pos - removed);
+    const suffix = (separator || ' ') + closingText;
+    tr.insert(start + 1 + closing.separatorStart + firstLineEnd, tr.doc.type.schema.text(suffix));
+  } else {
+    tr.join(pos);
+  }
+  let spelling = joined(before.type, before.attrs.spelling, after.attrs.spelling, after.type);
   if (before.type.isInGroup('list')) spelling = {
     ...(spelling as object | null),
     tight: before.attrs.spelling?.tight !== false && after.attrs.spelling?.tight !== false,
   };
   setAttributes(tr, start, { ...before.attrs, spelling });
   keepListNumbers(tr, start);
+}
+
+interface ATXClosing {
+  readonly separatorStart: number;
+  readonly closingFrom: number;
+}
+
+/** Locate the separator whitespace and closing `#` run of an ATX heading field, if present. */
+function atxClosing(node: Node): ATXClosing | null {
+  const { heading } = node.type.schema.nodes;
+  const { atxClosingSequence } = node.type.schema.marks;
+  if (node.type !== heading || node.attrs.form !== 'atx' || !node.content.size) return null;
+  let closingFrom = node.content.size;
+  for (let index = node.childCount - 1; index >= 0; index--) {
+    const child = node.child(index);
+    const hasMark = child.marks.some(mark => mark.type === atxClosingSequence);
+    if (!hasMark) {
+      if (closingFrom === node.content.size) return null;
+      break;
+    }
+    closingFrom -= child.nodeSize;
+  }
+  const prefix = node.textBetween(0, closingFrom, '\n', '\n');
+  let separatorStart: number;
+  if (prefix.length === 0) {
+    separatorStart = 0;
+  } else if (/^[ \t]+$/.test(prefix)) {
+    separatorStart = prefix.length - 1;
+  } else {
+    const match = /[ \t]+$/.exec(prefix);
+    separatorStart = match ? match.index : closingFrom;
+  }
+  return { separatorStart, closingFrom };
 }
 
 /** Updating attributes leaves every text endpoint intact, including its outward affinity. */
@@ -267,14 +324,14 @@ export function keepOuterFrames(shapes: readonly Shape[], node: Node, authored: 
   }
 }
 
-/** Whether adjacent list shells use one marker and can share a frame. @internal */
+/** Whether adjacent list shells use one marker and can share a frame. */
 export function compatibleLists(left: Node, right: Node): boolean {
   const fallback = left.type === left.type.schema.nodes.bulletList ? 'dash' : 'decimalDot';
   return left.type === right.type &&
     (left.attrs.spelling?.pattern ?? fallback) === (right.attrs.spelling?.pattern ?? fallback);
 }
 
-/** The item's number as written under its shell's numbering mode. @internal */
+/** The item's number as written under its shell's numbering mode. */
 export function listNumber(list: Node, index: number): number {
   switch (list.attrs.spelling?.numbering) {
     case 'constant': return list.attrs.startNumber;
@@ -283,7 +340,7 @@ export function listNumber(list: Node, index: number): number {
   }
 }
 
-/** Rebuild a list from retained items and the original boundaries of its first and last lines. @internal */
+/** Rebuild a list from retained items and the original boundaries of its first and last lines. */
 export function listShell(shell: Node, children: readonly Node[], first: ResolvedPos, last: ResolvedPos,
                           numbers: readonly number[] | null): Node {
   let items = children;

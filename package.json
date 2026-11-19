@@ -1,6 +1,6 @@
 {
   "name": "kagami-md",
-  "version": "0.0.0-alpha.2",
+  "version": "0.0.0-alpha.3",
   "license": "MPL-2.0",
   "author": "Kk Shinkai <i@shinkai.moe>",
   "homepage": "https://kkshinkai.github.io/kagami-md/",
@@ -16,12 +16,11 @@
   },
   "exports": {
     ".": {
-      "kagami:source": "./src/index.ts",
       "types": "./dist/types/index.d.ts",
       "import": "./dist/kagami-md.js"
     },
     "./styles.css": {
-      "kagami:source": "./src/styles.css",
+      "types": "./dist/styles.d.ts",
       "default": "./dist/styles.css"
     }
   },
@@ -35,10 +34,13 @@
   "scripts": {
     "build": "vite build && tsc -p tsconfig.build.json",
     "prepack": "pnpm build",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "watch": "vite build --watch --emptyOutDir=false"
   },
   "dependencies": {
-    "@fontsource/open-sans": "5.3.0",
+    "@codemirror/commands": "6.8.1",
+    "@codemirror/state": "6.5.2",
+    "@codemirror/view": "6.38.3",
     "debug": "4.4.3",
     "gemoji": "8.1.0",
     "katex": "0.18.7",
@@ -47,32 +49,13 @@
     "prosemirror-keymap": "1.2.3",
     "prosemirror-model": "1.25.12",
     "prosemirror-state": "1.4.4",
-    "prosemirror-tables": "^1.8.5",
+    "prosemirror-tables": "1.8.5",
     "prosemirror-transform": "1.12.0",
     "prosemirror-view": "1.42.6",
     "shiki": "4.4.3",
     "yaml": "2.9.1"
   },
-  "peerDependencies": {
-    "@codemirror/commands": "6.8.1",
-    "@codemirror/state": "6.5.2",
-    "@codemirror/view": "6.38.3"
-  },
-  "peerDependenciesMeta": {
-    "@codemirror/commands": {
-      "optional": true
-    },
-    "@codemirror/state": {
-      "optional": true
-    },
-    "@codemirror/view": {
-      "optional": true
-    }
-  },
   "devDependencies": {
-    "@codemirror/commands": "6.8.1",
-    "@codemirror/state": "6.5.2",
-    "@codemirror/view": "6.38.3",
     "@types/debug": "4.1.12",
     "@types/node": "22.20.1",
     "typescript": "7.0.2",

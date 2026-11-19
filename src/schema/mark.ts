@@ -15,33 +15,34 @@ import {
   type FormattingMeta, type FormattingSession, type FormattingState,
 } from './format.js';
 import { MarkRange } from './markrange.js';
-import { bindings } from '../state/bindings.js';
+import { BindingState } from '../state/bindings.js';
+import { getParser } from '../state/parser.js';
 import { readField, fieldSource } from '../parse/field.js';
+import type { Parser } from '../syntax/index.js';
 import type { InlineFormat } from './inlineformat.js';
+import { PluginDesc } from '../editor/plugin.js';
 
 /** Keep pending inline formatting attached to the characters accepted by native input. */
-export function mark(): Plugin[] {
-  return [mark.input()];
+export function mark(): PluginDesc[] {
+  return [PluginDesc.state(markInput)];
 }
 
-export namespace mark {
-  /** Spell the formatting session into the text input that owns it. */
-  export function type(state: EditorState, tr: Transaction): void {
-    if (compositionState(state)?.isComposing && !tr.getMeta(compositionCommit) ||
-        !(tr.selection instanceof TextSelection) || isFormattingTransaction(tr) || isHistoryTransaction(tr) ||
-        !(tr.docChanged || tr.getMeta(compositionCommit))) return;
-    const previous = formattingPluginKey.getState(state)?.session;
-    const session = previous && tr.docChanged ? transport(previous, tr.mapping) : previous;
-    if (session) new FormatInput(state, session, tr).apply();
-  }
+/** Spell the formatting session into the text input that owns it. */
+export function typeFormattedText(state: EditorState, tr: Transaction): void {
+  if (compositionState(state)?.isComposing && !tr.getMeta(compositionCommit) ||
+      !(tr.selection instanceof TextSelection) || isFormattingTransaction(tr) || isHistoryTransaction(tr) ||
+      !(tr.docChanged || tr.getMeta(compositionCommit))) return;
+  const previous = formattingPluginKey.getState(state)?.session;
+  const session = previous && tr.docChanged ? transport(previous, tr.mapping) : previous;
+  if (session) new FormatInput(state, session, tr).apply();
+}
 
-  /** Re-encode accepted text before field reconciliation; composition remains untouched. */
-  export function input(): Plugin<FormattingState> {
-    return new Plugin<FormattingState>({
-      key: formattingPluginKey,
-      state: { init: () => idle, apply: applyFormatting },
-    });
-  }
+/** Re-encode accepted text before field reconciliation; composition remains untouched. */
+function markInput(): Plugin<FormattingState> {
+  return new Plugin<FormattingState>({
+    key: formattingPluginKey,
+    state: { init: () => idle, apply: applyFormatting },
+  });
 }
 
 const idle: FormattingState = { rendered: false, session: null };
@@ -86,7 +87,8 @@ interface Operation {
 /** One accepted input owns the private source transaction and all of its position mappings. */
 class FormatInput {
   readonly tr: Transaction;
-  readonly environment: bindings.State;
+  readonly parser: Parser;
+  readonly environment: BindingState;
   readonly edits: { from: number; to: number; text: string }[] = [];
   get mapping(): Mapping { return this.tr.mapping; }
   readonly fields: Field[] = [];
@@ -96,7 +98,8 @@ class FormatInput {
   constructor(readonly state: EditorState, readonly session: FormattingSession, readonly input: Transaction) {
     const tr = this.tr = EditorState.create({ doc: input.doc, selection: input.selection,
       storedMarks: input.storedMarks }).tr;
-    this.environment = bindings.after(bindings.get(state), input);
+    this.parser = getParser(state);
+    this.environment = BindingState.after(BindingState.get(state), input);
     this.operations = [
       ...session.excluded.map(format => ({ format, enabled: false })),
       ...session.formats.map(format => ({ format, enabled: true })),
@@ -147,12 +150,12 @@ class FormatInput {
     for (const operation of this.operations) {
       const current = tr.doc.nodeAt(position)!;
       const source = fieldSource(current);
-      const environment = bindings.after(this.environment, tr);
-      const reading = readField(tr.doc.resolve(start), environment);
+      const environment = BindingState.after(this.environment, tr);
+      const reading = readField(tr.doc.resolve(start), this.parser, environment);
       if (reading.kind === 'blocks') continue;
       const analysis = { value: source, children: reading.children };
       const change = new MarkRange(analysis, from - start, to - start, operation.format, mode,
-        environment).change(operation.enabled);
+        this.parser, environment).change(operation.enabled);
       if (!change) continue;
       const nextFrom = start + change.map(from - start, 1);
       const nextTo = start + change.map(to - start, -1);
@@ -161,7 +164,8 @@ class FormatInput {
       to = nextTo;
     }
     if (this.fields.length === 1)
-      this.next = captureFormattingSession(tr.doc, from, to, bindings.after(bindings.get(this.state), tr),
+      this.next = captureFormattingSession(tr.doc, from, to, this.parser,
+        BindingState.after(BindingState.get(this.state), tr),
         session.formats, session.excluded);
   }
 

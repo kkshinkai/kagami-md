@@ -127,11 +127,27 @@ export function combine(type: NodeType, first: unknown, second: unknown, fromFir
     : new SpellingContext(fromFirst).select(rule.fields, first, second, rule.defaults);
 }
 
-/** Joining keeps the first block's front and the last block's back. */
-export function joined(type: NodeType, first: unknown, second: unknown): unknown {
-  if (first == null) return second;
+/** Joining keeps the first block's front and the last block's back, retaining syntax fields the second type lacks. */
+export function joined(type: NodeType, first: unknown, second: unknown, secondType: NodeType = type): unknown {
+  if (first == null && second == null) return null;
+  if (type === secondType) {
+    if (first == null) return second;
+    if (second == null) return first;
+    return combine(type, first, second, ['front', 'ordinary']);
+  }
+  if (first == null) return null;
   if (second == null) return first;
-  return combine(type, first, second, ['front', 'ordinary']);
+  const rule = spellings.get(type);
+  if (!rule) return null;
+  const otherFields = spellings.get(secondType)?.fields;
+  const merged: Spelling = { ...record(second) };
+  const left = record(first);
+  if (left) {
+    for (const key in rule.fields) {
+      if ((!otherFields || !(key in otherFields)) && key in left) merged[key] = left[key];
+    }
+  }
+  return new SpellingContext(['front', 'ordinary']).select(rule.fields, first, merged, rule.defaults);
 }
 
 /** B3e item 1: a reshape keeps the old spelling of framing both kinds have. */

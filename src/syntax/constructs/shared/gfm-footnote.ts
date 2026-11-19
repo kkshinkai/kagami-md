@@ -94,7 +94,7 @@ function tokenizePotentialGFMFootnoteCall(this: TokenizeContext, effects: Effect
     if (
       id.codePointAt(0) !== codes.caret ||
       !(defined.includes(id.slice(1)) ||
-        Boolean(self.parser.bindings && self.parser.bindings.footnote(id.slice(1).toLowerCase())))
+        self.parser.bindings.footnotes.has(id.slice(1).toLowerCase()))
     ) {
       return nok(code);
     }
@@ -263,7 +263,7 @@ function tokenizeGFMFootnoteCall(this: TokenizeContext, effects: Effects, ok: St
       const identifier = normalizeIdentifier(self.sliceSerialize(token));
       self.parser.references.push({ kind: 'footnotes', label: identifier.toLowerCase(), offset: self.now().offset });
       if (!(defined.includes(identifier) ||
-        Boolean(self.parser.bindings && self.parser.bindings.footnote(identifier.toLowerCase())))) {
+        self.parser.bindings.footnotes.has(identifier.toLowerCase()))) {
         return nok(code);
       }
 

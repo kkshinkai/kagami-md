@@ -8,17 +8,18 @@
 import type { DOMNode } from '../editor/dom.js';
 import { Fragment, Slice, type Node } from 'prosemirror-model';
 import { closeHistory } from 'prosemirror-history';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { TextSelection, type EditorState } from 'prosemirror-state';
 import type { EditorView, ViewMutationRecord } from 'prosemirror-view';
-import { parseFile } from '../syntax/index.js';
-import { input } from '../editor/input.js';
+import { routeHistoryKey } from '../editor/input.js';
 import { compositionState } from '../state/input.js';
-import { parse } from '../parse/parse.js';
+import { getParser } from '../state/parser.js';
+import { parseFrontMatter } from '../parse/parse.js';
 import { replace } from '../transform/transform.js';
 import { schema } from '../types/schema.js';
-import { yaml } from '../unparse/yaml.js';
-import { frontmatter } from './frontmatter.js';
+import { unparseYAMLBody } from '../unparse/yaml.js';
+import { frontmatterKey, type FrontmatterDraft, type FrontmatterSession } from './frontmatter.js';
+import { YAMLSourceView } from './yamlsourceview.js';
 import { propertyIcon, type PropertyView } from './propertyview.js';
 
 let contentId = 0;
@@ -36,7 +37,7 @@ export class FrontmatterView implements PropertyView {
   private readonly sourceLabel: Text;
   private readonly cancelButton: HTMLButtonElement;
   private readonly errorMessage: HTMLDivElement;
-  private source: frontmatter.SourceView | null = null;
+  private source: YAMLSourceView | null = null;
 
   constructor(private node: Node, readonly view: EditorView, private readonly getPos: () => number | undefined,
     private readonly forget: (node: PropertyView) => void) {
@@ -90,7 +91,7 @@ export class FrontmatterView implements PropertyView {
     this.render();
   }
 
-  private get session(): frontmatter.Session { return frontmatter.key.getState(this.view.state)!; }
+  private get session(): FrontmatterSession { return frontmatterKey.getState(this.view.state)!; }
   private get collapsed(): boolean { return this.session.collapsed; }
   private get sourceMode(): boolean { return this.session.source !== null; }
   private get error(): string | null { return this.session.source?.error ?? null; }
@@ -118,21 +119,21 @@ export class FrontmatterView implements PropertyView {
     if (source === this.sourceMode) return true;
     if (!source) return this.applySource();
     this.moveSelectionOutside();
-    const initial = this.node.type === schema.nodes.rawFrontMatter ? this.node.textContent : yaml.body(this.node);
-    const draft: frontmatter.Draft = {
+    const initial = this.node.type === schema.nodes.rawFrontMatter ? this.node.textContent : unparseYAMLBody(this.node);
+    const draft: FrontmatterDraft = {
       initial, draft: initial, selection: { anchor: 0, head: 0 }, node: this.node, error: null
     };
     this.openSource(draft);
     this.view.dispatch(closeHistory(this.view.state.tr)
-      .setMeta(frontmatter.key, { collapsed: false, source: draft } satisfies frontmatter.Session)
+      .setMeta(frontmatterKey, { collapsed: false, source: draft } satisfies FrontmatterSession)
       .setMeta('addToHistory', false));
     this.source!.focus();
     return true;
   }
 
-  private openSource(draft: frontmatter.Draft): void {
+  private openSource(draft: FrontmatterDraft): void {
     this.mount.hidden = false;
-    this.source = new frontmatter.SourceView(this.mount, draft.draft, draft.selection,
+    this.source = new YAMLSourceView(this.mount, draft.draft, draft.selection,
       () => this.sourceChanged(), error => this.setError(String(error)), { readOnly: !this.view.editable });
     this.source.inputElement.setAttribute('aria-label', 'YAML source');
   }
@@ -149,18 +150,8 @@ export class FrontmatterView implements PropertyView {
     });
   }
 
-  /** Flush accepted draft text and its selection before the attached editor is destroyed. */
-  preserveSession(): void {
-    const draft = this.session.source;
-    if (!draft || !this.source) return;
-    const { markdown, selection } = this.source.read();
-    if (markdown !== draft.draft || selection.anchor !== draft.selection.anchor ||
-        selection.head !== draft.selection.head)
-      this.store({ ...this.session, source: { ...draft, draft: markdown, selection } });
-  }
-
-  private store(session: frontmatter.Session): void {
-    this.view.dispatch(this.view.state.tr.setMeta(frontmatter.key, session).setMeta('addToHistory', false));
+  private store(session: FrontmatterSession): void {
+    this.view.dispatch(this.view.state.tr.setMeta(frontmatterKey, session).setMeta('addToHistory', false));
   }
   private setError(error: string): void {
     const draft = this.session.source;
@@ -182,18 +173,18 @@ export class FrontmatterView implements PropertyView {
           'Properties changed while this draft was open. Cancel and reopen the source to edit the current properties.');
         return false;
       }
-      const parsed = parseFile('---\n' + draft + (draft.endsWith('\n') ? '' : '\n') + '---',
-        { target: 'editor' }).document.frontMatter;
+      const parsed = getParser(this.view.state).parseFile(
+        '---\n' + draft + (draft.endsWith('\n') ? '' : '\n') + '---').document.frontMatter;
       if (parsed?.type !== 'yamlFrontMatter') {
         this.setError('YAML is incomplete or contains unsupported types. Correct the draft before applying it.');
         return false;
       }
-      const next = parse.frontMatter(parsed, this.view.state.schema);
+      const next = parseFrontMatter(parsed, this.view.state.schema);
       this.closeSource();
       const tr = closeHistory(this.view.state.tr);
       replace(tr, pos, pos + this.node.nodeSize, new Slice(Fragment.from(next), 0, 0));
-      this.view.dispatch(history.isolate(tr).setMeta(frontmatter.key,
-        { ...this.session, source: null } satisfies frontmatter.Session));
+      this.view.dispatch(isolateHistory(tr).setMeta(frontmatterKey,
+        { ...this.session, source: null } satisfies FrontmatterSession));
     } else {
       this.closeSource();
       this.store({ ...this.session, source: null });
@@ -207,7 +198,7 @@ export class FrontmatterView implements PropertyView {
     if (this.view.isDestroyed || !this.source || this.isComposing()) return;
     this.closeSource();
     this.view.dispatch(closeHistory(this.view.state.tr)
-      .setMeta(frontmatter.key, { ...this.session, source: null } satisfies frontmatter.Session)
+      .setMeta(frontmatterKey, { ...this.session, source: null } satisfies FrontmatterSession)
       .setMeta('addToHistory', false));
     this.view.focus();
   }
@@ -249,7 +240,7 @@ export class FrontmatterView implements PropertyView {
   }
   refresh(previous: EditorState, force = false): void {
     this.source?.view.setRoot(this.view.root);
-    if (force || frontmatter.key.getState(previous) !== this.session) this.sync();
+    if (force || frontmatterKey.getState(previous) !== this.session) this.sync();
     const selected = this.view.state.selection;
     const pos = this.getPos();
     // Navigation and undo that explicitly select a folded field reveal it.
@@ -260,7 +251,7 @@ export class FrontmatterView implements PropertyView {
     }
   }
   handleKeyDown(event: KeyboardEvent): boolean {
-    if (!this.source) return !this.view.isDestroyed && input.historyKey(this.view, event);
+    if (!this.source) return !this.view.isDestroyed && routeHistoryKey(this.view, event);
     if (event.altKey || !(event.metaKey || event.ctrlKey) || !['z', 'y'].includes(event.key.toLowerCase()))
       return false;
     event.preventDefault();

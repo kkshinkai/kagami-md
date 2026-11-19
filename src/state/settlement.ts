@@ -7,11 +7,11 @@
 
 import {
   BlockSyntax, CalloutDeclarationSyntax, CalloutSyntax, CodeBlockSyntax, LinkReferenceDefinitionSyntax,
-  LinkTitleStartSyntax, MathBlockSyntax, TaskMarkerSyntax, parseBlocks, type Transduction,
+  LinkTitleStartSyntax, MathBlockSyntax, TaskMarkerSyntax, type Parser, type Transduction,
 } from '../syntax/index.js';
 import { Fragment, type Node } from 'prosemirror-model';
 import { TextSelection, type Transaction } from 'prosemirror-state';
-import { readBindings, type BindingSet } from '../parse/bindings.js';
+import { type BindingSet } from '../parse/bindings.js';
 import { fieldSource } from '../parse/field.js';
 import { keepOuterFrames } from '../transform/frames.js';
 import {
@@ -20,7 +20,7 @@ import {
 } from '../transform/reading.js';
 import { reshapeBlocks } from '../transform/reshape.js';
 import { insert, keptShape, realize, update, type Shape } from '../transform/transform.js';
-import { phrasing } from './correction.js';
+import { completedPhrasing, type PhrasingUpdate } from './correction.js';
 import { setContent } from './field.js';
 import { meaning } from './meaning.js';
 import { mapTextSelection } from './selection.js';
@@ -126,8 +126,8 @@ function endsBeforeBreak(block: BlockSyntax, end: number): boolean {
 }
 
 /** Re-read definition frames after their fields have established their string meaning. */
-export function rereadDefinition(tr: Transaction, position: number, bindings: BindingSet,
-  blurred: boolean): phrasing.Update | null {
+export function rereadDefinition(tr: Transaction, position: number, parser: Parser,
+  bindings: BindingSet, blurred: boolean): PhrasingUpdate | null {
   const node = tr.doc.nodeAt(position);
   if (!node?.firstChild) return null;
   // The keys rule keeps an empty label while the user is still editing it.
@@ -137,7 +137,7 @@ export function rereadDefinition(tr: Transaction, position: number, bindings: Bi
     return null;
   }
   const start = tr.steps.length;
-  const reading = definitionReading(tr, position, bindings);
+  const reading = definitionReading(tr, position, parser, bindings);
   if (!reading) {
     refreshDefinitionMeaning(tr, position);
     return null;
@@ -167,8 +167,8 @@ export function rereadDefinition(tr: Transaction, position: number, bindings: Bi
     }
   } else new BlockSettlement(tr, position, node, reading.text, reading.blocks).reshape(mapped, authored);
   const changed = tr.mapping.slice(start);
-  return { bindings: readBindings.blocks(reading.blocks, bindings),
-    completed: phrasing.completed(tr.doc, changed.map(position, -1), changed.map(position + node.nodeSize, 1),
+  return { bindings: bindings.withBlocks(reading.blocks),
+    completed: completedPhrasing(tr.doc, changed.map(position, -1), changed.map(position + node.nodeSize, 1),
       retained) };
 }
 
@@ -209,7 +209,7 @@ type ConditionalReading = Exclude<Transduction, { kind: 'blocks' }>;
 
 /** Apply syntax whose meaning depends on the field's enclosing frame. */
 export function conditional(tr: Transaction, position: number, reading: ConditionalReading,
-  bindings: BindingSet): phrasing.Update | null {
+  parser: Parser, bindings: BindingSet): PhrasingUpdate | null {
   const field = tr.doc.resolve(position + 1);
   const types = tr.doc.type.schema.nodes;
   if (field.depth < 2) return null;
@@ -217,7 +217,7 @@ export function conditional(tr: Transaction, position: number, reading: Conditio
   // whitespace. Those leading characters are taken with the construct.
   const first = reading.children.find(child => child instanceof TaskMarkerSyntax ||
     child instanceof CalloutDeclarationSyntax);
-  const context = new ConditionalSettlement(tr, position, reading, bindings);
+  const context = new ConditionalSettlement(tr, position, reading, parser, bindings);
   if (first instanceof TaskMarkerSyntax && field.node(-1).type === types.listItem) return context.task(first);
   if (first instanceof CalloutDeclarationSyntax && field.node(-1).type === types.blockQuote)
     return context.callout(first);
@@ -229,9 +229,9 @@ export function conditional(tr: Transaction, position: number, reading: Conditio
 /** Conditional readings share the same source coordinates and binding environment. */
 class ConditionalSettlement {
   constructor(readonly tr: Transaction, readonly position: number, readonly reading: ConditionalReading,
-    readonly bindings: BindingSet) {}
+    readonly parser: Parser, readonly bindings: BindingSet) {}
 
-  task(marker: TaskMarkerSyntax): phrasing.Update {
+  task(marker: TaskMarkerSyntax): PhrasingUpdate {
     const { tr, position, reading, bindings } = this;
     const field = tr.doc.resolve(position + 1);
     const text = fieldSource(field.parent);
@@ -242,7 +242,7 @@ class ConditionalSettlement {
     return { bindings, completed: new Set([tr.doc.nodeAt(position)!]) };
   }
 
-  callout(marker: CalloutDeclarationSyntax): phrasing.Update {
+  callout(marker: CalloutDeclarationSyntax): PhrasingUpdate {
     const { tr, position, bindings } = this;
     const field = tr.doc.resolve(position + 1);
     const container = field.before(field.depth - 1);
@@ -251,7 +251,8 @@ class ConditionalSettlement {
     if (!quote) throw new RangeError('The callout declaration lost its quote');
     // The authored first field is read in quote context. Its origin is already
     // known; later body blocks remain native ranges in the reshape.
-    const { text, blocks, origins } = quoteReading(quote, fieldSource(quote.child(0)), container + 2, bindings);
+    const { text, blocks, origins } = quoteReading(quote, fieldSource(quote.child(0)), container + 2, this.parser,
+      bindings);
     if (!(blocks[0] instanceof CalloutSyntax)) throw new RangeError('The declaration must read as a callout');
     const authored = new Map<Shape, Node>();
     const mapped = readingShapes(blocks, text, tr.doc.type.schema, origins, authored);
@@ -269,11 +270,11 @@ class ConditionalSettlement {
     authored.delete(shape);
     mapTextSelection(tr,
       range => reshapeBlocks(tr, container, container + quote.nodeSize, [{ ...shape, children }], authored, range).map);
-    return { bindings: readBindings.blocks(blocks, bindings),
-      completed: phrasing.completed(tr.doc, container, container + tr.doc.nodeAt(container)!.nodeSize, retained) };
+    return { bindings: bindings.withBlocks(blocks),
+      completed: completedPhrasing(tr.doc, container, container + tr.doc.nodeAt(container)!.nodeSize, retained) };
   }
 
-  title(marker: LinkTitleStartSyntax): phrasing.Update {
+  title(marker: LinkTitleStartSyntax): PhrasingUpdate {
     const { tr, position, reading, bindings } = this;
     const field = tr.doc.resolve(position + 1);
     const definition = field.node(-1);
@@ -282,7 +283,7 @@ class ConditionalSettlement {
     // Complete the recognized opening in source, then take the field from the
     // reader. Commands supply a reading, never a constructed syntax node.
     const source = '[r]: /u ' + delimiter + (delimiter === '(' ? ')' : delimiter);
-    const parsed = parseBlocks(source, { target: 'editor' }, bindings)[0];
+    const parsed = this.parser.parseBlocks(source)[0];
     if (!(parsed instanceof LinkReferenceDefinitionSyntax) || !parsed.titleField)
       throw new RangeError('The title opening must read as a title');
     tr.insertText('', position + marker.start + 1, position + marker.end + 1);

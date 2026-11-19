@@ -11,8 +11,9 @@ import { codes } from '../kernel/utils/symbol/index.js';
 // ATX headings and cells cannot open blocks. Empty-field placement belongs to the unparser.
 import { edgeMarkCode } from '../constructs/text/edge-mark.js';
 
-import { transduce } from './read.js';
-import { Bindings } from './reading.js';
+import { Parser } from './parse.js';
+
+let parser: Parser | undefined;
 
 /** ZWSP edge mark: The kinds of text that have a mark. */
 export type EdgeMarkKind = 'paragraph' | 'atxHeading' | 'tableCell';
@@ -70,15 +71,14 @@ export function needsEdgeMark(text: string, kind: EdgeMarkKind, also?: EdgeMarkP
   // spaces only. Check each suffix required by needs(Z r), never predict block openings.
   do {
     const source = text.slice(start);
-    const result = transduce(
+    const result = (parser ??= new Parser({ target: 'editor' })).transduce(
       source,
       {
         phrasing: 'paragraph',
         settle: true,
         firstInListItem: Boolean(place.taskMarker),
         firstInBlockQuote: Boolean(place.calloutDeclaration),
-      },
-      Bindings.none
+      }
     );
 
     if (result.kind !== 'inline') {

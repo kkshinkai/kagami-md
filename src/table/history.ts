@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { type Command } from 'prosemirror-state';
 
 /** Give a deliberate table command its own native history event. */
@@ -13,7 +13,7 @@ export function tableHistory(command: Command): Command {
   return (state, dispatch, view) => {
     if (!dispatch) return command(state, undefined, view);
     return command(state, transaction => {
-      if (transaction.docChanged) history.isolate(transaction);
+      if (transaction.docChanged) isolateHistory(transaction);
       dispatch(transaction);
     }, view);
   };

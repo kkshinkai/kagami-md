@@ -7,7 +7,7 @@
 
 import { Fragment, Slice, type Node, type ResolvedPos } from 'prosemirror-model';
 import { schema } from '../types/schema.js';
-import { unparse } from './unparse.js';
+import { unparseSlice, type unparse } from './unparse.js';
 
 /** Write a cell selection as a standalone table. Deeper open slices belong to the
  * ordinary text serializer; the first selected row supplies the required GFM header. */
@@ -31,5 +31,5 @@ export function tableText(slice: Slice, from: ResolvedPos, options: unparse.Opti
 }
 
 function write(table: Node, from: ResolvedPos, options: unparse.Options): string {
-  return unparse.slice(new Slice(Fragment.from(table), 0, 0), from, options);
+  return unparseSlice(new Slice(Fragment.from(table), 0, 0), from, options);
 }

@@ -8,9 +8,10 @@
 import {
   ATXClosingSequenceSyntax, BackslashEscapeSyntax, CalloutDeclarationSyntax,
   CharacterReferenceSyntax, DelimitedSyntax, HardLineBreakSyntax, LinkSyntax,
-  PendingSyntax, SoftLineBreakSyntax, TaskMarkerSyntax, Syntax, transduce,
-  Bindings, type Phrasing,
+  PendingSyntax, SoftLineBreakSyntax, TaskMarkerSyntax, Syntax,
+  type Bindings, type Parser, type Phrasing,
 } from '../syntax/index.js';
+import { defaultParser } from '../state/parser.js';
 import { inlineBody, inlineFormat, type InlineBranch, type InlineFormat } from './inlineformat.js';
 
 type UnitKind = 'text' | 'literal' | 'break' | 'syntax';
@@ -48,6 +49,7 @@ export class MarkRange {
     readonly to: number,
     readonly format: InlineFormat,
     readonly mode: Phrasing,
+    readonly parser: Parser = defaultParser,
     readonly bindings?: Bindings
   ) {
     if (from < 0 || to < from || to > analysis.value.length) {
@@ -82,14 +84,17 @@ export class MarkRange {
     const expected = signature(units, this.format);
     const spellings: readonly Spelling[] = this.format === 'bold' || this.format === 'italic'
       ? ['preserve', 'star', 'underscore'] : ['preserve'];
-    const bindings = this.bindings ?? Bindings.none;
     for (const escape of [false, true]) {
       for (const spelling of spellings) {
         const pieces = new WriteContext(this.analysis.value, this.format, spelling, escape).sequence(tree);
         const source = pieces.map(piece => piece.text).join('');
-        const reading = transduce(source, {
-          phrasing: this.mode, settle: true, firstInListItem: false, firstInBlockQuote: false,
-        }, bindings);
+        const reading = this.parser.transduce(source, {
+          bindings: this.bindings,
+          phrasing: this.mode,
+          settle: true,
+          firstInListItem: false,
+          firstInBlockQuote: false,
+        });
         if (reading.kind !== 'inline') continue;
         const actual = new BuildContext(source, 0, 0, this.format).read(reading.children);
         if (signature(flatten(actual), this.format) === expected) {

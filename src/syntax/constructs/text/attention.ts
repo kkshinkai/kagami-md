@@ -241,6 +241,7 @@ function tokenizeAttention(this: TokenizeContext, effects: Effects, ok: State): 
     // Always populated by defaults.
     assert(attentionMarkers, 'expected `attentionMarkers` to be populated');
 
+    // Only markers from other constructs can loosen flanking.
     // To do: next major: move this to resolver, just like `markdown-rs`.
     if (!context.parser.cjkFriendly) {
       const before = classifyCharacter(previous);
@@ -248,11 +249,15 @@ function tokenizeAttention(this: TokenizeContext, effects: Effects, ok: State): 
       const open =
         !after ||
         (after === constants.characterGroupPunctuation && before) ||
-        attentionMarkers.includes(code);
+        (attentionMarkers.includes(code) &&
+          code !== codes.asterisk &&
+          code !== codes.underscore);
       const close =
         !before ||
         (before === constants.characterGroupPunctuation && after) ||
-        attentionMarkers.includes(previous);
+        (attentionMarkers.includes(previous) &&
+          previous !== codes.asterisk &&
+          previous !== codes.underscore);
       token._open = Boolean(
         marker === codes.asterisk ? open : open && (before || !close)
       );
@@ -263,8 +268,16 @@ function tokenizeAttention(this: TokenizeContext, effects: Effects, ok: State): 
     }
     const after = classifyAttentionCharacter(nextCodePoint(context, code));
     const sides = attentionSides(before, after);
-    const open = sides.open || attentionMarkers.includes(code);
-    const close = sides.close || attentionMarkers.includes(previous);
+    const open =
+      sides.open ||
+      (attentionMarkers.includes(code) &&
+        code !== codes.asterisk &&
+        code !== codes.underscore);
+    const close =
+      sides.close ||
+      (attentionMarkers.includes(previous) &&
+        previous !== codes.asterisk &&
+        previous !== codes.underscore);
 
     token._open = marker === codes.asterisk ? open : open && (isSpaceOrPunctuation(before) || !close);
     token._close = marker === codes.asterisk ? close : close && (isSpaceOrPunctuation(after) || !open);

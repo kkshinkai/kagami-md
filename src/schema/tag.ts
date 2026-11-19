@@ -9,87 +9,83 @@ import type { Node } from 'prosemirror-model';
 import { Plugin, PluginKey, TextSelection, type EditorState } from 'prosemirror-state';
 import { Decoration } from 'prosemirror-view';
 import { TagSyntax, WikilinkSyntax } from '../syntax/index.js';
-import type { Completion as Completions } from '../editor/completion.js';
+import {
+  queryCompletionProviders,
+  type CompletionActions,
+  type CompletionSnapshot,
+  type CompletionSource,
+} from '../editor/completion.js';
+import type { KagamiMD } from '../editor/editor.js';
 import { CompletionField } from './completionfield.js';
 import { schema } from '../types/schema.js';
-import { META, REVEALED, CAPSULE_START, reveal, type SourcePresentation } from '../editor/reveal.js';
+import { META, REVEALED, CAPSULE_START, revealState, type SourcePresentation } from '../editor/reveal.js';
+import { PluginDesc } from '../editor/plugin.js';
 import { isRevealed, type Revealing } from '../state/normalization.js';
 
 /** Present tags as source capsules with native text editing. */
-export function tag(): Plugin[] {
-  return [tag.presentation()];
+export function tag(): PluginDesc[] {
+  return [PluginDesc.viewState(tagPresentation)];
 }
 
-export namespace tag {
-  /** Tags are recognized and checked by the parser before their spelling is inserted. */
-  export const source: Completions.Source<Completions.Candidate> = {
-    match(state) {
-      const field = CompletionField.read(state);
-      if (!field) return null;
-      const before = field.source.slice(0, field.caret);
-      const from = before.lastIndexOf('#');
-      const wiki = before.lastIndexOf('[[');
-      if (!field.starts(from) || wiki > from) return null;
-      if (field.syntax.some(token => token instanceof WikilinkSyntax && token.start === wiki &&
-          token.start <= field.caret && field.caret <= token.end)) return null;
-      // A parser-owned name leaves a bare # and '# ' available to heading input.
-      const tag = field.syntax.find(token => token instanceof TagSyntax && token.start === from);
-      if (!(tag instanceof TagSyntax) || field.caret > tag.end) return null;
-      if (field.tokens.some(token => token.end > from && token.start < field.caret && token.type !== schema.marks.tag))
-        return null;
-      const query = field.source.slice(from + 1, field.caret);
-      if (!query) return null;
-      const end = Math.max(field.caret, tag.end);
-      // A space after the tag stays after the name: replace it with the one space the
-      // replacement writes, so the caret ends after it and no second space is left.
-      return { query, from: field.start + from, to: field.start + end + (field.source[end] === ' ' ? 1 : 0) };
-    },
-    enabled: editor => !!editor?.spec.completeTag,
-    candidates: (query, signal, editor) => editor?.spec.completeTag?.(query, signal) ?? [],
-    apply(candidate, prompt, state) {
-      const field = CompletionField.read(state);
-      if (!field || !candidate.value || /[\r\n]/u.test(candidate.value)) return null;
-      const replacement = `#${candidate.value} `;
-      const source = field.replace(prompt.from, prompt.to, replacement);
-      if (source === null) return null;
-      const from = prompt.from - field.start;
-      const valid = field.parse(source).some(token => token instanceof TagSyntax && token.start === from &&
-        source.slice(token.start, token.end) === `#${candidate.value}`);
-      return valid ? replacement : null;
-    },
-    same: () => true,
-    publish: state => ({ kind: 'tag', ...state }),
-  };
+/** Tags are recognized and checked by the parser before their spelling is inserted. */
+export const tagCompletionSource: CompletionSource<KagamiMD.CompletionCandidate> = {
+  kind: 'tag',
+  match(state) {
+    const field = CompletionField.read(state);
+    if (!field) return null;
+    const before = field.source.slice(0, field.caret);
+    const from = before.lastIndexOf('#');
+    const wiki = before.lastIndexOf('[[');
+    if (!field.starts(from) || wiki > from) return null;
+    if (field.syntax.some(token => token instanceof WikilinkSyntax && token.start === wiki &&
+        token.start <= field.caret && field.caret <= token.end)) return null;
+    // A parser-owned name leaves a bare # and '# ' available to heading input.
+    const found = field.syntax.find(token => token instanceof TagSyntax && token.start === from);
+    if (!(found instanceof TagSyntax) || field.caret > found.end) return null;
+    if (field.tokens.some(token => token.end > from && token.start < field.caret && token.type !== schema.marks.tag))
+      return null;
+    const query = field.source.slice(from + 1, field.caret);
+    if (!query) return null;
+    const end = Math.max(field.caret, found.end);
+    // A space after the tag stays after the name: replace it with the one space the
+    // replacement writes, so the caret ends after it and no second space is left.
+    return { query, from: field.start + from, to: field.start + end + (field.source[end] === ' ' ? 1 : 0) };
+  },
+  enabled: editor => (editor?.getTagCompletionProviders().length ?? 0) > 0,
+  candidates: (query, signal, editor) =>
+    queryCompletionProviders(editor?.getTagCompletionProviders() ?? [], query, signal, editor),
+  apply(candidate, prompt, state) {
+    const field = CompletionField.read(state);
+    if (!field || !candidate.value || /[\r\n]/u.test(candidate.value)) return null;
+    const replacement = `#${candidate.value} `;
+    const source = field.replace(prompt.from, prompt.to, replacement);
+    if (source === null) return null;
+    const from = prompt.from - field.start;
+    const valid = field.parse(source).some(token => token instanceof TagSyntax && token.start === from &&
+      source.slice(token.start, token.end) === `#${candidate.value}`);
+    return valid ? replacement : null;
+  },
+  same: () => true,
+  publish: (state: CompletionSnapshot<KagamiMD.CompletionCandidate>, _prompt, actions: CompletionActions): KagamiMD.TagCompletion =>
+    ({ kind: 'tag', ...state, ...actions }),
+};
 
-  /** Source visibility follows the shared pointer and composition lifetime. */
-  export function presentation(): Plugin<SourcePresentation> {
-    return new Plugin({
-      key: presentationKey,
-      state: reveal.state(draw),
-      props: {
-        decorations(state) { return presentationKey.getState(state)?.decorations ?? null; },
-        handleDoubleClick(view, position) {
-          if (!view.editable) return false;
-          const found = at(view.state, position).find(tag => tag.from <= position && tag.to >= position);
-          if (!found) return false;
-          view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, found.from, found.to)));
-          return true;
-        },
+/** Source visibility follows the shared pointer and composition lifetime. */
+export function tagPresentation(): Plugin<SourcePresentation> {
+  return new Plugin({
+    key: presentationKey,
+    state: revealState(draw),
+    props: {
+      decorations(state) { return presentationKey.getState(state)?.decorations ?? null; },
+      handleDoubleClick(view, position) {
+        if (!view.editable) return false;
+        const found = at(view.state, position).find(range => range.from <= position && range.to >= position);
+        if (!found) return false;
+        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, found.from, found.to)));
+        return true;
       },
-    });
-  }
-}
-
-/** Completion data for `#name`. */
-export namespace Tag {
-  /** A tag completion is distinguished from the other feature presentations. */
-  export interface Completion extends Completions.State<Completions.Candidate> {
-    readonly kind: 'tag';
-  }
-
-  /** Answer a tag query until its request is cancelled. */
-  export type Completer = (query: string,
-    signal: AbortSignal) => readonly Completions.Candidate[] | Promise<readonly Completions.Candidate[]>;
+    },
+  });
 }
 
 interface TagRange {

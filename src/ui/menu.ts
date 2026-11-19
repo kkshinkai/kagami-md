@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Destroyable, Emitter, type Event } from '../event/index.js';
+import { Destroyable, Emitter } from '../event/index.js';
 import { check, createIcon } from './icon.js';
 import { Popup } from './popup.js';
 
@@ -22,9 +22,9 @@ interface Row {
  */
 export class Menu extends Destroyable {
   readonly element: HTMLElement;
-  private readonly ran = this._register(new Emitter<Menu.Action>());
+  private readonly _onDidRun = this._register(new Emitter<Menu.Action>());
   /** After an item's `run` has returned. */
-  readonly onDidRun: Event<Menu.Action> = this.ran.event;
+  get onDidRun() { return this._onDidRun.event; }
   private readonly rows: Row[] = [];
 
   constructor(document: Document, items: readonly Menu.Item[], label: string) {
@@ -92,7 +92,7 @@ export class Menu extends Destroyable {
   private run(action: Menu.Action): void {
     if (action.disabled) return;
     action.run();
-    this.ran.fire(action);
+    this._onDidRun.fire(action);
   }
 
   private move(enabled: readonly Row[], index: number): void {

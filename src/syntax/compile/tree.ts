@@ -85,9 +85,7 @@ import { append, appendInline, children, replaceCurrent } from './children.js';
 
 import { Fragment } from './types.js';
 
-import type { Event, Point, Token } from '../types/index.js';
-
-import type { Bindings } from '../syntax/reading.js';
+import type { Bindings, Event, Point, Token } from '../types/index.js';
 import type {
   CompileContext,
   Compiler,
@@ -101,7 +99,6 @@ import type {
 } from './types.js';
 import { assert } from '../kernel/assert.js';
 import { decodeNamedCharacterReference } from '../kernel/utils/decode-named-character-reference/index.js';
-import { phrasingDocument } from '../constructs/bundle.js';
 import { decodeNumericCharacterReference } from '../kernel/utils/decode-numeric-character-reference/index.js';
 import { normalizeIdentifier } from '../kernel/utils/normalize-identifier/index.js';
 import { stringifyPosition } from '../kernel/utils/stringify-position/index.js';
@@ -121,7 +118,7 @@ import { finishNode } from './envelope.js';
 const own = {}.hasOwnProperty;
 
 /**
- * Compile complete event streams, with source and grammar on the handler context.
+ * Compile complete event streams, with source and field flags on the handler context.
  * Kagami: handlers keep the upstream tables and token stack, with no hidden input state.
  *
  * @param options
@@ -154,6 +151,160 @@ export function createCompiler(
   return compiler.compile.bind(compiler);
 }
 
+/** Build a reusable compiler configuration for one set of syntax extensions. */
+export function createConfig(
+  mdastExtensions: Array<Array<Extension> | Extension> = []
+): Config {
+  const config: Config = {
+    transforms: [],
+    canContainEOLs: [
+      'emphasis',
+      'fragment',
+      'atxHeading',
+      'setextHeading',
+      'paragraph',
+      'strongEmphasis',
+    ],
+    enter: {
+      autolink: opener(autolink),
+      atxHeading: opener(heading),
+      atxHeadingText: onenteratxheadingtext,
+      blockQuote: opener(blockQuote, onenterblockquote),
+      calloutDeclaration: opener(calloutDeclaration),
+      calloutTitle: opener(calloutTitle),
+      characterEscape: opener(characterEscape),
+      characterReference: opener(characterReference),
+      codeFenced: opener(codeFlow),
+      codeFencedFenceInfo: onentercodefencedfenceinfo,
+      codeFencedFenceMeta: onentercodefencedfenceinfo,
+      codeIndented: opener(codeFlow),
+      codeText: opener(codeText),
+      codeTextData: onenterdata,
+      data: onenterdata,
+      definition: opener(definition),
+      definitionDestination: onenterdefinitiondestination,
+      definitionDestinationString: onenterstring,
+      definitionLabelString: onenterstring,
+      definitionTitle: onenterdefinitiontitle,
+      definitionTitleString: onenterstring,
+      emphasis: opener(emphasis),
+      hardBreakEscape: opener(hardBreak),
+      hardBreakTrailing: opener(hardBreak),
+      htmlFlow: opener(html),
+      htmlText: opener(htmlText),
+      htmlTextData: onenterhtmltextdata,
+      image: opener(image),
+      label: buffer,
+      link: opener(link),
+      listItem: opener(listItem),
+      listItemValue: onenterlistitemvalue,
+      listOrdered: opener(list, onenterlistordered),
+      listUnordered: opener(list),
+      paragraph: opener(paragraph, onenterparagraph),
+      reference: onenterreference,
+      referenceString: onenterstring,
+      resource: onenterresource,
+      resourceDestination: onenterresourcedestination,
+      resourceDestinationString: onenterstring,
+      resourceTitleString: onenterstring,
+      setextHeading: opener(heading),
+      strong: opener(strong),
+      thematicBreak: opener(thematicBreak),
+    },
+    exit: {
+      atxHeading: closer(onexitatxheading),
+      atxHeadingSequence: onexitatxheadingsequence,
+      autolink: closer(),
+      autolinkEmail: onexitautolinkemail,
+      autolinkMarker: onexitautolinkmarker,
+      autolinkProtocol: onexitautolinkprotocol,
+      blockQuote: closer(),
+      blockQuotePrefix: onexitblockquoteprefix,
+      blockQuotePrefixWhitespace: onexitblockquoteprefixwhitespace,
+      calloutDeclaration: onexitcalloutdeclaration,
+      calloutDeclarationMarker: onexitcalloutdeclarationmarker,
+      calloutDeclarationType: onexitcalloutdeclarationtype,
+      calloutHead: onexitcallouthead,
+      calloutTitle: onexitcallouttitle,
+      characterEscape: closer(),
+      characterEscapeValue: onexitcharacterescapevalue,
+      characterReferenceMarker: onexitcharacterreferencedelimiter,
+      characterReferenceMarkerHexadecimal: onexitcharacterreferencemarker,
+      characterReferenceMarkerNumeric: onexitcharacterreferencemarker,
+      characterReferenceValue: onexitcharacterreferencevalue,
+      characterReference: closer(),
+      codeFenced: closer(),
+      codeFencedFence: onexitcodefencedfence,
+      codeFencedFenceInfo: onexitcodefencedfenceinfo,
+      codeFencedFenceMeta: onexitcodefencedfencemeta,
+      codeFencedFenceSequence: onexitcodefencedfencesequence,
+      codeFlowValue: onexitcodeflowvalue,
+      codeIndented: closer(),
+      codeText: closer(),
+      codeTextData: onexitcodetextdata,
+      codeTextPadding: onexitcodetextpadding,
+      codeTextSequence: onexitcodetextsequence,
+      codeTextTableEscape: onexittablepipeescape,
+      data: onexitdata,
+      definition: closer(),
+      definitionDestination: onexitdefinitionfield,
+      definitionDestinationLiteralMarker: onexitdefinitiondestinationmarker,
+      definitionDestinationString: onexitdefinitiondestinationstring,
+      definitionLabelString: onexitdefinitionlabelstring,
+      definitionMarker: onexitdefinitionmarker,
+      definitionTitle: onexitdefinitionfield,
+      definitionTitleMarker: onexittitlemarker,
+      definitionTitleString: onexitdefinitiontitlestring,
+      emphasis: closer(),
+      emphasisSequence: onexitsequence,
+      escapeMarker: onexitescapemarker,
+      hardBreakEscape: closer(onexithardbreak),
+      hardBreakTrailing: closer(onexithardbreak),
+      htmlFlow: closer(onexithtmlflow),
+      htmlFlowData: onexithtmlflowdata,
+      htmlText: closer(onexithtmltext),
+      htmlTextData: onexithtmltextdata,
+      image: closer(onexitlink),
+      label: onexitlabel,
+      labelImageMarker: onexitlabelimagemarker,
+      labelMarker: onexitlabelmarker,
+      labelText: onexitlabeltext,
+      lineEnding: onexitlineending,
+      lineEndingBlank: onexitlineendingblank,
+      linePrefix: onexitlineprefix,
+      lineSuffix: onexitlinetrivia,
+      link: closer(onexitlink),
+      listItem: closer(onexitlistitem),
+      listItemIndent: onexitprefix,
+      gfmFootnoteDefinitionIndent: onexitprefix,
+      listItemMarker: onexitlistitemmarker,
+      listItemPrefixWhitespace: onexitlistitemprefixwhitespace,
+      listItemPrefix: onexitcontaineropening,
+      listItemValue: onexitlistitemvalue,
+      listOrdered: closer(onexitlistordered),
+      listUnordered: closer(),
+      paragraph: onexitparagraph,
+      referenceMarker: onexitreferencemarker,
+      referenceString: onexitreferencestring,
+      resourceDestinationLiteralMarker: onexitresourcedestinationliteralmarker,
+      resourceDestinationString: onexitresourcedestinationstring,
+      resourceMarker: onexitresourcemarker,
+      resourceTitleMarker: onexitresourcetitlemarker,
+      resourceTitleString: onexitresourcetitlestring,
+      setextHeading: closer(onexitsetextheading),
+      setextHeadingLineSequence: onexitsetextheadinglinesequence,
+      setextHeadingText: onexitsetextheadingtext,
+      strong: closer(),
+      strongSequence: onexitsequence,
+      thematicBreak: closer(),
+      whitespace: onexitwhitespace,
+    },
+  };
+
+  configure(config, mdastExtensions);
+  return config;
+}
+
 /** The configuration and handler state retained by one compiler. */
 class TreeCompiler {
   readonly config: Config;
@@ -164,154 +315,7 @@ class TreeCompiler {
     readonly localDefinitions: ReadonlyMap<string, Bindings.Definition> | undefined,
     readonly authoredParagraph: boolean
   ) {
-    const config: Config = {
-      transforms: [(tree) => this.references(tree)],
-      canContainEOLs: [
-        'emphasis',
-        'fragment',
-        'atxHeading',
-        'setextHeading',
-        'paragraph',
-        'strongEmphasis',
-      ],
-      enter: {
-        autolink: opener(autolink),
-        atxHeading: opener(heading),
-        atxHeadingText: onenteratxheadingtext,
-        blockQuote: opener(blockQuote, onenterblockquote),
-        calloutDeclaration: opener(calloutDeclaration),
-        calloutTitle: opener(calloutTitle),
-        characterEscape: opener(characterEscape),
-        characterReference: opener(characterReference),
-        codeFenced: opener(codeFlow),
-        codeFencedFenceInfo: onentercodefencedfenceinfo,
-        codeFencedFenceMeta: onentercodefencedfenceinfo,
-        codeIndented: opener(codeFlow),
-        codeText: opener(codeText),
-        codeTextData: onenterdata,
-        data: onenterdata,
-        definition: opener(definition),
-        definitionDestination: onenterdefinitiondestination,
-        definitionDestinationString: onenterstring,
-        definitionLabelString: onenterstring,
-        definitionTitle: onenterdefinitiontitle,
-        definitionTitleString: onenterstring,
-        emphasis: opener(emphasis),
-        hardBreakEscape: opener(hardBreak),
-        hardBreakTrailing: opener(hardBreak),
-        htmlFlow: opener(html),
-        htmlText: opener(htmlText),
-        htmlTextData: onenterhtmltextdata,
-        image: opener(image),
-        label: buffer,
-        link: opener(link),
-        listItem: opener(listItem),
-        listItemValue: onenterlistitemvalue,
-        listOrdered: opener(list, onenterlistordered),
-        listUnordered: opener(list),
-        paragraph: opener(paragraph, onenterparagraph),
-        reference: onenterreference,
-        referenceString: onenterstring,
-        resource: onenterresource,
-        resourceDestination: onenterresourcedestination,
-        resourceDestinationString: onenterstring,
-        resourceTitleString: onenterstring,
-        setextHeading: opener(heading),
-        strong: opener(strong),
-        thematicBreak: opener(thematicBreak),
-      },
-      exit: {
-        atxHeading: closer(onexitatxheading),
-        atxHeadingSequence: onexitatxheadingsequence,
-        autolink: closer(),
-        autolinkEmail: onexitautolinkemail,
-        autolinkMarker: onexitautolinkmarker,
-        autolinkProtocol: onexitautolinkprotocol,
-        blockQuote: closer(),
-        blockQuotePrefix: onexitblockquoteprefix,
-        blockQuotePrefixWhitespace: onexitblockquoteprefixwhitespace,
-        calloutDeclaration: onexitcalloutdeclaration,
-        calloutDeclarationMarker: onexitcalloutdeclarationmarker,
-        calloutDeclarationType: onexitcalloutdeclarationtype,
-        calloutHead: onexitcallouthead,
-        calloutTitle: onexitcallouttitle,
-        characterEscape: closer(),
-        characterEscapeValue: onexitcharacterescapevalue,
-        characterReferenceMarker: onexitcharacterreferencedelimiter,
-        characterReferenceMarkerHexadecimal: onexitcharacterreferencemarker,
-        characterReferenceMarkerNumeric: onexitcharacterreferencemarker,
-        characterReferenceValue: onexitcharacterreferencevalue,
-        characterReference: closer(),
-        codeFenced: closer(),
-        codeFencedFence: onexitcodefencedfence,
-        codeFencedFenceInfo: onexitcodefencedfenceinfo,
-        codeFencedFenceMeta: onexitcodefencedfencemeta,
-        codeFencedFenceSequence: onexitcodefencedfencesequence,
-        codeFlowValue: onexitcodeflowvalue,
-        codeIndented: closer(),
-        codeText: closer(),
-        codeTextData: onexitcodetextdata,
-        codeTextPadding: onexitcodetextpadding,
-        codeTextSequence: onexitcodetextsequence,
-        codeTextTableEscape: onexittablepipeescape,
-        data: onexitdata,
-        definition: closer(),
-        definitionDestination: onexitdefinitionfield,
-        definitionDestinationLiteralMarker: onexitdefinitiondestinationmarker,
-        definitionDestinationString: onexitdefinitiondestinationstring,
-        definitionLabelString: onexitdefinitionlabelstring,
-        definitionMarker: onexitdefinitionmarker,
-        definitionTitle: onexitdefinitionfield,
-        definitionTitleMarker: onexittitlemarker,
-        definitionTitleString: onexitdefinitiontitlestring,
-        emphasis: closer(),
-        emphasisSequence: onexitsequence,
-        escapeMarker: onexitescapemarker,
-        hardBreakEscape: closer(onexithardbreak),
-        hardBreakTrailing: closer(onexithardbreak),
-        htmlFlow: closer(onexithtmlflow),
-        htmlFlowData: onexithtmlflowdata,
-        htmlText: closer(onexithtmltext),
-        htmlTextData: onexithtmltextdata,
-        image: closer(onexitlink),
-        label: onexitlabel,
-        labelImageMarker: onexitlabelimagemarker,
-        labelMarker: onexitlabelmarker,
-        labelText: onexitlabeltext,
-        lineEnding: onexitlineending,
-        lineEndingBlank: onexitlineendingblank,
-        linePrefix: onexitlineprefix,
-        lineSuffix: onexitlinetrivia,
-        link: closer(onexitlink),
-        listItem: closer(onexitlistitem),
-        listItemIndent: onexitprefix,
-        gfmFootnoteDefinitionIndent: onexitprefix,
-        listItemMarker: onexitlistitemmarker,
-        listItemPrefixWhitespace: onexitlistitemprefixwhitespace,
-        listItemPrefix: onexitcontaineropening,
-        listItemValue: onexitlistitemvalue,
-        listOrdered: closer(onexitlistordered),
-        listUnordered: closer(),
-        paragraph: onexitparagraph,
-        referenceMarker: onexitreferencemarker,
-        referenceString: onexitreferencestring,
-        resourceDestinationLiteralMarker: onexitresourcedestinationliteralmarker,
-        resourceDestinationString: onexitresourcedestinationstring,
-        resourceMarker: onexitresourcemarker,
-        resourceTitleMarker: onexitresourcetitlemarker,
-        resourceTitleString: onexitresourcetitlestring,
-        setextHeading: closer(onexitsetextheading),
-        setextHeadingLineSequence: onexitsetextheadinglinesequence,
-        setextHeadingText: onexitsetextheadingtext,
-        strong: closer(),
-        strongSequence: onexitsequence,
-        thematicBreak: closer(),
-        whitespace: onexitwhitespace,
-      },
-    };
-
-    configure(config, settings.mdastExtensions || []);
-    this.config = config;
+    this.config = settings.config ?? createConfig(settings.mdastExtensions || []);
   }
 
   /**
@@ -332,7 +336,7 @@ class TreeCompiler {
     const context: CompileContext.Shared = {
       target: settings.target,
       source: value,
-      grammar: settings.grammar,
+      phrasingBlocks: Boolean(settings.phrasingBlocks),
       authoredParagraph,
       stack: [tree],
       tokenStack: [],
@@ -430,7 +434,8 @@ class TreeCompiler {
       events.length > 0 ? events[events.length - 2]![1].end : { line: 1, column: 1, offset: 0 }
     );
 
-    // Call transforms.
+    // Resolve references, then run any extension transforms.
+    resolveReferences(tree, settings.bindings || undefined, localDefinitions);
     index = -1;
     while (++index < config.transforms.length) {
       tree = config.transforms[index]!(tree) || tree;
@@ -446,17 +451,6 @@ class TreeCompiler {
     new ReferenceQuestions(events).fields(tree);
     return tree;
   }
-
-  /**
-   * Give each reference its definition’s destination and title.
-   *
-   * @param tree
-   *   Tree.
-   */
-  references(tree: DocumentSyntax): undefined {
-    resolveReferences(tree, this.settings.bindings || undefined, this.localDefinitions);
-  }
-
 }
 
 /** End the last body line, carrying a child's cut past indentation but not later explicit syntax. */
@@ -612,7 +606,7 @@ function resolveReferences(
     const definition =
       definitions.get(node.identifier) ??
       localDefinitions?.get(node.identifier) ??
-      bindings?.definition(node.identifier);
+      bindings?.definitions.get(node.identifier);
     assert(definition, 'expected reference definition');
     node.destination = definition.destination;
     node.title = definition.title;
@@ -1610,7 +1604,7 @@ function onenterparagraph(this: CompileContext, token: Token): undefined {
   // ZWSP edge mark: a field has no file indentation. Once its tokenizer has
   // recognized a paragraph, the opening prefix is the user's text.
   const prefix = this.data.linePrefix;
-  if (this.grammar !== phrasingDocument || !prefix || prefix.end.offset !== token.start.offset)
+  if (!this.phrasingBlocks || !prefix || prefix.end.offset !== token.start.offset)
     return;
   paragraph.start = point(prefix.start);
   paragraph.spelling.spacesBeforeBlock = 0;

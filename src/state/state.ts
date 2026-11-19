@@ -5,75 +5,107 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { EditorState, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state';
+import * as pm from 'prosemirror-history';
+import {
+  EditorState, Selection, TextSelection, type Command, type Plugin, type Transaction,
+} from 'prosemirror-state';
 import type { KagamiMD } from '../editor/editor.js';
-import { fullSchema } from '../schema/bundle.js';
-import { read, source, type EditorLoc, type SourceLoc } from '../source/index.js';
+import type { CompiledPlugins } from '../editor/plugin.js';
+import { compilePlugins } from '../editor/plugins.js';
+import { Source, read, type EditorLoc, type SourceLoc } from '../source/index.js';
+import { Parser, tag, wikilink, type Extension } from '../syntax/index.js';
 import { schema } from '../types/schema.js';
-import { unparse } from '../unparse/unparse.js';
-import { history } from './history.js';
+import { defaultUnparseOptions, type unparse } from '../unparse/unparse.js';
+import { finishHistory } from './history.js';
 import { canRunCommand } from './input.js';
 
 /**
  * A document: its Markdown text and its history. It needs no editor: a command that needs
  * only the document runs on a state that nothing shows.
  *
- * State.create installs the fixed feature bundle and fixes the writing options for the document.
- * This bootstrap crosses into schema/. The attached KagamiMD is also held
- * here: destroying the document destroys its attachment, including during construction.
+ * KagamiState.create installs only persistent document plugins and fixes the writing options for
+ * the document. Attaching a KagamiMD reconfigures view-state plugins in, and detaching
+ * reconfigures them back out. Destroying the document destroys its attachment.
  */
-export class State {
-  static create(spec: State.Spec = {}): State {
-    return new State(spec);
+export class KagamiState {
+  static create(spec: KagamiState.Spec = {}): KagamiState {
+    return new KagamiState(spec);
   }
 
+  /** @internal */
+  readonly parser: Parser;
+  /** @internal */
+  readonly plugins: CompiledPlugins;
+  /** @internal */
+  readonly tagEnabled: boolean;
+  /** @internal */
+  readonly wikilinkEnabled: boolean;
+  private readonly statePlugins: readonly Plugin[];
   private current: EditorState;
   private editor: KagamiMD | null = null;
   private destroyed = false;
   private destroying = false;
 
-  private constructor(spec: State.Spec) {
+  private constructor(spec: KagamiState.Spec) {
+    this.tagEnabled = spec.tag != null;
+    this.wikilinkEnabled = spec.wikilink != null;
+    const extensions: Extension[] = [];
+    if (this.wikilinkEnabled) extensions.push(wikilink);
+    if (this.tagEnabled) extensions.push(tag);
+    this.parser = new Parser({ target: 'editor', cjkFriendly: spec.cjkFriendly !== false, extensions });
+    this.plugins = compilePlugins(spec);
     const options: unparse.Options = {
-      keepEmptyParagraph: spec.keepEmptyParagraph ?? unparse.defaults.keepEmptyParagraph,
-      keepEmptySetextHeading: spec.keepEmptySetextHeading ?? unparse.defaults.keepEmptySetextHeading,
-      keepStartingSpaceOrTab: spec.keepStartingSpaceOrTab ?? unparse.defaults.keepStartingSpaceOrTab,
+      keepEmptyParagraph: spec.keepEmptyParagraph ?? defaultUnparseOptions.keepEmptyParagraph,
+      keepEmptySetextHeading: spec.keepEmptySetextHeading ?? defaultUnparseOptions.keepEmptySetextHeading,
+      keepStartingSpaceOrTab: spec.keepStartingSpaceOrTab ?? defaultUnparseOptions.keepStartingSpaceOrTab,
     };
-    const initial = read(spec.doc ?? '', options);
+    const initial = read(spec.doc ?? '', options, this.parser);
+    this.statePlugins = this.plugins.state(this);
     this.current = EditorState.create({
       schema,
       ...initial,
       selection: Selection.atStart(initial.doc),
-      plugins: fullSchema(),
+      plugins: this.statePlugins,
     });
   }
 
-  get doc(): string {
+  getMarkdown(): string {
     this.assertAlive();
-    return source.get(this.current).text();
+    return Source.get(this.current).text();
   }
 
   sourceToEditor(location: SourceLoc): EditorLoc {
     this.assertAlive();
-    return source.get(this.current).sourceToEditor(location);
+    return Source.get(this.current).sourceToEditor(location);
   }
 
   editorToSource(location: EditorLoc): SourceLoc {
     this.assertAlive();
-    return source.get(this.current).editorToSource(location);
+    return Source.get(this.current).editorToSource(location);
   }
 
   /** Where the selection starts and where its moving end is. They are equal for a cursor. */
-  get selection(): { readonly anchor: EditorLoc; readonly head: EditorLoc } {
+  getSelection(): KagamiState.Selection {
     this.assertAlive();
     const { anchor, head } = this.current.selection;
     return { anchor: anchor as EditorLoc, head: head as EditorLoc };
   }
 
   /** Select from `anchor` to `head`, or put the cursor at `anchor`, at the nearest text. */
-  select(anchor: EditorLoc, head: EditorLoc = anchor): void {
+  setSelection(anchor: EditorLoc, head: EditorLoc = anchor): void {
     this.assertAlive();
     const { doc } = this.current;
     this.applyTransaction(this.current.tr.setSelection(TextSelection.between(doc.resolve(anchor), doc.resolve(head))));
+  }
+
+  /** Take back the last change. Returns `false` when there is none. */
+  undo(): boolean {
+    return this.runCommand(pm.undo);
+  }
+
+  /** Apply again the last undone change. Returns `false` when there is none. */
+  redo(): boolean {
+    return this.runCommand(pm.redo);
   }
 
   /** @internal */
@@ -91,15 +123,15 @@ export class State {
       throw new RangeError('A transaction must be dispatched against the current editor state');
     }
     const applied = baseState.applyTransaction(transaction);
-    const next = history.finish(source.settle(applied.state), applied.transactions);
+    const next = finishHistory(Source.settle(applied.state), applied.transactions);
     if (next === baseState) return next;
     this.current = next;
     const editor = this.editor;
     if (editor?.view && !editor.isDestroyed()) {
       editor.view.updateState(next);
-      const before = source.get(baseState);
-      const after = source.get(next);
-      editor.updates.fire({ state: this, get docChanged() { return !after.sameText(before); } });
+      const before = Source.get(baseState);
+      const after = Source.get(next);
+      editor._onDidUpdate.fire({ state: this, get docChanged() { return !after.sameText(before); } });
     }
     return next;
   }
@@ -112,16 +144,23 @@ export class State {
     return canRunCommand(state, view) && command(state, transaction => this.applyTransaction(transaction, state), view);
   }
 
-  /** Attach the surface without replacing any document field or plugin. @internal */
+  /** Attach the surface and reconfigure view-state plugins onto the document state. @internal */
   attachView(editor: KagamiMD): void {
     this.assertAlive();
     if (this.editor) throw new Error('State is already attached to an editor');
     this.editor = editor;
+    this.current = this.current.reconfigure({
+      plugins: [...this.statePlugins, ...this.plugins.viewState(editor)],
+    });
   }
 
-  /** @internal */
+  /** Detach the surface and reconfigure back to persistent document plugins. @internal */
   detachView(editor: KagamiMD): void {
-    if (this.editor === editor) this.editor = null;
+    if (this.editor !== editor) return;
+    this.editor = null;
+    if (!this.destroyed && !this.destroying) {
+      this.current = this.current.reconfigure({ plugins: this.statePlugins });
+    }
   }
 
   isDestroyed(): boolean { return this.destroyed; }
@@ -143,10 +182,22 @@ export class State {
   }
 }
 
-export namespace State {
+export namespace KagamiState {
+  /** A text selection range inside a document state. */
+  export interface Selection {
+    readonly anchor: EditorLoc;
+    readonly head: EditorLoc;
+  }
+
   /** The initial Markdown and the writing options fixed for the document's lifetime. */
   export interface Spec extends Partial<unparse.Options> {
-    /** The Markdown text to begin with. On an editor, not used when a `state` is given. */
+    /** The Markdown text to begin with. */
     readonly doc?: string;
+    /** Use CJK-friendly inline delimiter boundaries. Defaults to true. */
+    readonly cjkFriendly?: boolean;
+    /** Enable `#tag` syntax when an object is given; `null` or omission disables it. */
+    readonly tag?: Record<string, never> | null;
+    /** Enable `[[wikilink]]` syntax when an object is given; `null` or omission disables it. */
+    readonly wikilink?: Record<string, never> | null;
   }
 }

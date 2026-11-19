@@ -7,7 +7,7 @@
 
 import type { Event, ReferenceQuestion } from '../types/index.js';
 import { InlineFieldClauseSyntax, StringFieldClauseSyntax, TextBlockSyntax } from '../syntax/block.js';
-import { ReferenceLabels } from '../syntax/reading.js';
+import { ReferenceLabels } from '../syntax/parse.js';
 import type { Syntax } from '../syntax/syntax.js';
 
 /** The tokenizer's binding questions, ordered once for this compilation. */

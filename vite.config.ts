@@ -6,26 +6,27 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { defineConfig, type Plugin } from 'vite';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
-const external = new Set([...Object.keys(pkg.dependencies), ...Object.keys(pkg.peerDependencies)]);
+const external = new Set(Object.keys(pkg.dependencies));
 // Engine fixes must travel with the artifact. Tables and View share DecorationSet identity,
 // so they are bundled together; state/model/transform and CM remain shared dependencies.
 const bundled = ['prosemirror-history', 'prosemirror-view', 'prosemirror-tables'];
 for (const name of bundled) external.delete(name);
 
-// The stylesheet inlines KaTeX's stylesheet and fonts and Open Sans, which the bundled
+// The stylesheet inlines KaTeX's stylesheet and fonts, which the bundled
 // dependencies' license file, made from the script's modules, does not see.
 const licenseFile = 'THIRD-PARTY-LICENSES.md';
-const styleDependencies = ['katex', '@fontsource/open-sans'];
+const styleDependencies = ['katex'];
 
 function styleLicenses(): Plugin {
   const require = createRequire(import.meta.url);
   return {
     name: 'style-licenses',
     writeBundle({ dir }) {
+      writeFileSync(`${dir}/styles.d.ts`, 'export {};\n');
       for (const name of styleDependencies) {
         const { version, license } = require(`${name}/package.json`);
         const text = readFileSync(require.resolve(`${name}/LICENSE`), 'utf8').trim();

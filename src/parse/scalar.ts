@@ -5,14 +5,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { YAMLFrontMatterSyntax, YAMLScalarSyntax, parseFile } from '../syntax/index.js';
+import { YAMLFrontMatterSyntax, YAMLScalarSyntax, Parser } from '../syntax/index.js';
+
+const yamlParser = new Parser({ target: 'editor' });
 
 /** The YAML reader's interpretation of an unquoted scalar field. */
 type ScalarTag = 'string' | 'integer' | 'float' | 'boolean' | 'null';
 
 /** Scalar inference belongs to the same YAML reader as file import. */
 export function inferYAMLScalar(source: string): ScalarTag {
-  const document = parseFile(`---\nvalue: ${source}\n---`, { target: 'editor' }).document;
+  const document = yamlParser.parseFile(`---\nvalue: ${source}\n---`).document;
   if (!(document.frontMatter instanceof YAMLFrontMatterSyntax)) return 'string';
   const value = document.frontMatter.root.children[0]?.value;
   return value instanceof YAMLScalarSyntax ? value.tag : 'string';

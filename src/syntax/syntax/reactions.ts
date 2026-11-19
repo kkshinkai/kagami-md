@@ -6,10 +6,10 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { blockEvents, parseEvents } from '../compile/events.js';
-import { inlinePhrasings, phrasingDocument } from '../constructs/bundle.js';
+import { inlinePhrasings, partOfFile, phrasingDocument } from '../constructs/bundle.js';
 import type { Token } from '../types/index.js';
 import type { SourceRange } from './syntax.js';
-import type { Phrasing } from './reading.js';
+import type { Phrasing } from './parse.js';
 
 export interface TextRepair extends SourceRange {
   insert: string;
@@ -83,7 +83,7 @@ function hardBreakStarts(text: string): Map<number, number> {
   if (!text.includes('\\') || !/[\r\n]/.test(text)) return escapes;
   const events = parseEvents(text, {
     target: 'editor',
-    grammar: inlinePhrasings.paragraph,
+    extensions: [inlinePhrasings.paragraph],
     contentType: 'text',
   });
   for (const [kind, token] of events) {
@@ -97,7 +97,7 @@ function hardBreakStarts(text: string): Map<number, number> {
 /** The fixed header makes every unescaped pipe a divider, even past its one-column width. */
 function pipeRepairs(text: string, previous: ReadonlyArray<TextRepair>): Array<TextRepair> {
   const prefix = '| x |\n| - |\n| ';
-  const events = blockEvents(prefix + text + ' |', { target: 'editor' });
+  const events = blockEvents(prefix + text + ' |', { target: 'editor', extensions: [partOfFile] });
   const repairs: TextRepair[] = [];
   for (const [kind, token] of events) {
     if (kind !== 'enter' || token.type !== 'tableCellDivider') continue;
@@ -114,7 +114,7 @@ function blockRepairs(source: string, initial: ReadonlyArray<TextRepair>): Array
   const repairs = [...initial];
   let text = applyRepairs(source, initial);
   for (;;) {
-    const events = blockEvents(text, { target: 'editor', grammar: phrasingDocument });
+    const events = blockEvents(text, { target: 'editor', extensions: [phrasingDocument] });
     const opening = events.find(([kind, token]) => kind === 'enter' && blockOpening(token));
     if (!opening) return repairs;
     let offset = opening[1].start.offset;

@@ -6,16 +6,18 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { DOMNode } from '../editor/dom.js';
-import { Bindings,
-  CharacterReferenceSyntax, InlineMathSyntax, transduce, emojiForShortcode, type Syntax,
+import {
+  CharacterReferenceSyntax, InlineMathSyntax, Parser, emojiForShortcode, type Syntax,
 } from '../syntax/index.js';
 import {
   DOMSerializer, Fragment, Slice, type DOMOutputSpec, type Mark, type Node,
   type ResolvedPos, type Schema,
 } from 'prosemirror-model';
 import { schema } from '../types/schema.js';
-import { annotatedBlockKinds, treeAttribute, readAnnotation } from '../types/annotations.js';
-import { unparse } from './unparse.js';
+import { annotatedBlockKinds, readFragmentAnnotations, treeAttribute } from '../types/annotations.js';
+import { defaultUnparseOptions, unparseAlone, unparseSlice } from './unparse.js';
+
+const defaultParser = new Parser({ target: 'editor' });
 
 const annotatedBlocks = new Set([...annotatedBlockKinds].map(name => schema.nodes[name]));
 const images = new Set([schema.marks.inlineImage, schema.marks.fullReferenceImage,
@@ -29,7 +31,11 @@ const annotatedMarks = new Map([
 
 /** Portable slice HTML with source annotations for Kagami constructs. */
 export class HTMLSerializer extends DOMSerializer {
-  constructor(schema: Schema, readonly document?: () => Node) {
+  constructor(
+    schema: Schema,
+    readonly document?: () => Node,
+    readonly parser: () => Parser = () => defaultParser,
+  ) {
     super({
       ...DOMSerializer.nodesFromSchema(schema),
       lineEnding: () => ['br'],
@@ -56,10 +62,13 @@ export class HTMLSerializer extends DOMSerializer {
     target?: HTMLElement | DocumentFragment): HTMLElement | DocumentFragment {
     const document = options.document ?? globalThis.document;
     const output = target ?? document.createDocumentFragment();
-    const context = new SerializeContext(this, document, this.document?.());
+    const parser = this.parser();
+    const context = new SerializeContext(this, document, parser, this.document?.());
     context.fragment(fragment, output);
     if (fragment.firstChild?.isBlock && output.firstChild?.nodeType === 1) {
-      (output.firstChild as HTMLElement).setAttribute(treeAttribute, JSON.stringify(selectedTree(fragment).toJSON()));
+      (output.firstChild as HTMLElement).setAttribute(
+        treeAttribute, JSON.stringify(selectedTree(fragment, parser).toJSON()),
+      );
     }
     context.tableAlignment(fragment, output);
     return output;
@@ -75,7 +84,8 @@ interface OpenMark {
 class SerializeContext {
   readonly math = new Map<Node, ResolvedPos>();
 
-  constructor(readonly serializer: DOMSerializer, readonly dom: Document, readonly document?: Node) {
+  constructor(readonly serializer: DOMSerializer, readonly dom: Document, readonly parser: Parser,
+    readonly document?: Node) {
     document?.descendants((node, position) => {
       if (node.type === schema.nodes.mathBlock) this.math.set(node, document.resolve(position));
     });
@@ -83,7 +93,7 @@ class SerializeContext {
 
   fragment(fragment: Fragment, output: HTMLElement | DocumentFragment, owner?: Node, tight?: boolean): void {
     const active: OpenMark[] = [];
-    const annotations = readAnnotation.fragment(fragment,
+    const annotations = readFragmentAnnotations(fragment, this.parser,
       owner?.type === schema.nodes.tableParagraph ? 'tableCell' : 'atxHeading');
     let previousImage: Mark | undefined;
     let consumed = 0;
@@ -130,7 +140,7 @@ class SerializeContext {
             source += piece.isText ? piece.text : '\n';
             size += piece.nodeSize;
           }
-          const syntax = singleSyntax(source);
+          const syntax = singleSyntax(source, this.parser);
           const element = syntax instanceof InlineMathSyntax
             ? this.formula('inline', source, syntax.math) : this.dom.createTextNode(source);
           this.inline(output, active, node.marks, element);
@@ -160,7 +170,7 @@ class SerializeContext {
       const origin = this.math.get(node);
       if (origin)
         // A math block has no edge mark, so the options do not reach it.
-        output.appendChild(this.formula('block', unparse.slice(new Slice(Fragment.from(node), 0, 0), origin, unparse.defaults),
+        output.appendChild(this.formula('block', unparseSlice(new Slice(Fragment.from(node), 0, 0), origin, defaultUnparseOptions),
           node.textContent));
       else {
         const paragraph = this.dom.createElement('p');
@@ -177,7 +187,7 @@ class SerializeContext {
     if (annotatedBlocks.has(node.type) && node.type.validContent(node.content) && rendered.dom.nodeType === 1) {
       const element = rendered.dom as HTMLElement;
       element.setAttribute('data-markdown-kind', node.type.name);
-      element.setAttribute('data-markdown-source', unparse.alone(node).body);
+      element.setAttribute('data-markdown-source', unparseAlone(node).body);
     }
     output.appendChild(rendered.dom);
     if (!rendered.contentDOM) return;
@@ -196,7 +206,7 @@ class SerializeContext {
     let value = node.text!;
     if (node.marks.some(mark => mark.type === schema.marks.characterReference ||
         mark.type === schema.marks.emojiShortcode)) {
-      const syntax = singleSyntax(value);
+      const syntax = singleSyntax(value, this.parser);
       if (syntax?.type === 'emojiShortcode') value = emojiForShortcode(value) ?? value;
       else if (syntax instanceof CharacterReferenceSyntax) value = syntax.character;
     }
@@ -266,12 +276,12 @@ function sameStyle(a: Mark, b: Mark): boolean {
 }
 
 /** Native slicing keeps marks for partly selected occurrences; carry only complete annotations. */
-function selectedTree(fragment: Fragment, owner?: Node): Fragment {
-  const annotations = [...readAnnotation.fragment(fragment,
+function selectedTree(fragment: Fragment, parser: Parser, owner?: Node): Fragment {
+  const annotations = [...readFragmentAnnotations(fragment, parser,
     owner?.type === schema.nodes.tableParagraph ? 'tableCell' : 'atxHeading').values()];
   const children: Node[] = [];
   fragment.forEach((node, offset) => {
-    if (!node.isInline) children.push(node.copy(selectedTree(node.content, node)));
+    if (!node.isInline) children.push(node.copy(selectedTree(node.content, parser, node)));
     else children.push(node.mark(node.marks.filter(mark => {
       const kind = annotatedMarks.get(mark.type);
       return !kind || annotations.some(annotation => annotation.kind === kind &&
@@ -281,9 +291,10 @@ function selectedTree(fragment: Fragment, owner?: Node): Fragment {
   return Fragment.fromArray(children);
 }
 
-function singleSyntax(source: string): Syntax | undefined {
-  const reading = transduce(source, { phrasing: 'atxHeading', firstInListItem: false, firstInBlockQuote: false },
-    Bindings.none);
+function singleSyntax(source: string, parser: Parser): Syntax | undefined {
+  const reading = parser.transduce(source, {
+    phrasing: 'atxHeading', firstInListItem: false, firstInBlockQuote: false,
+  });
   return reading.kind === 'inline' && reading.children.length === 1 ? reading.children[0] : undefined;
 }
 

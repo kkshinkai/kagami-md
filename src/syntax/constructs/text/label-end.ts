@@ -247,7 +247,7 @@ function tokenizeLabelEnd(this: TokenizeContext, effects: Effects, ok: State, no
     // Kagami: a field can refer to a definition outside the text being read.
     defined =
       self.parser.defined.includes(identifier) ||
-      Boolean(self.parser.bindings && self.parser.bindings.definition(identifier.toLowerCase()));
+      self.parser.bindings.definitions.has(identifier.toLowerCase());
     effects.enter(types.labelEnd);
     effects.enter(types.labelMarker);
     effects.consume(code);
@@ -544,7 +544,7 @@ function tokenizeReferenceFull(this: TokenizeContext, effects: Effects, ok: Stat
     self.parser.references.push({ kind: 'definitions', label: identifier.toLowerCase(), offset: self.now().offset - 1 });
     // Kagami: ask at this label, including unsuccessful lookup attempts.
     return (self.parser.defined.includes(identifier) ||
-      Boolean(self.parser.bindings && self.parser.bindings.definition(identifier.toLowerCase())))
+      self.parser.bindings.definitions.has(identifier.toLowerCase()))
       ? ok(code)
       : nok(code);
   }

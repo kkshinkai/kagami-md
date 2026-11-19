@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Destroyable, Emitter, type Event } from '../event/index.js';
+import { Destroyable, Emitter } from '../event/index.js';
 import { List } from './list.js';
 import { Popup } from './popup.js';
 
@@ -17,9 +17,9 @@ let pickers = 0;
  */
 export class Picker extends Destroyable {
   readonly element: HTMLElement;
-  private readonly chosen = this._register(new Emitter<string>());
+  private readonly _onDidChoose = this._register(new Emitter<string>());
   /** The value that was chosen. */
-  readonly onDidChoose: Event<string> = this.chosen.event;
+  get onDidChoose() { return this._onDidChoose.event; }
   private readonly input: HTMLInputElement;
   private readonly list: List;
   private readonly empty: HTMLElement;
@@ -91,7 +91,7 @@ export class Picker extends Destroyable {
 
   private choose(index: number): void {
     const choice = this.choices[index];
-    if (choice) this.chosen.fire(choice.value);
+    if (choice) this._onDidChoose.fire(choice.value);
   }
 
   private readonly keyDown = (event: KeyboardEvent): void => {

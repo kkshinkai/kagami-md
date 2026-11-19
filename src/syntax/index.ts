@@ -6,7 +6,8 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 export { isCodeLanguage } from './syntax/code-language.js';
-export { parseFile, parseBlocks, transduce } from './syntax/read.js';
+export { Parser, ReferenceLabels } from './syntax/parse.js';
+export { tag, wikilink } from './constructs/bundle.js';
 export { isFootnoteLabel, isLinkLabel, isLinkDestination, isLinkTitle } from './syntax/definition.js';
 export {
   parseFrontmatter,
@@ -30,11 +31,9 @@ export { Syntax, type SourceRange } from './syntax/syntax.js';
 export * from './syntax/block.js';
 export * from './syntax/inline.js';
 export type { Frontier, FrontierPiece } from './syntax/frontier.js';
-export { Bindings, ReferenceLabels } from './syntax/reading.js';
+export type { Bindings, Extension, Target } from './types/index.js';
 export type {
   VirtualFile,
   Phrasing,
-  ReadOptions,
-  TransduceOptions,
   Transduction,
-} from './syntax/reading.js';
+} from './syntax/parse.js';

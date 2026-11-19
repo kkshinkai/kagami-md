@@ -37,7 +37,7 @@ export function isLinkTitle(text: string, delimiter: '"' | "'" | '(' = '"'): boo
 
 /** A valid frame must recognize exactly the supplied field, without consuming a prefix only. */
 function matchesToken(source: string, type: TokenType, start: number, end: number): boolean {
-  return blockEvents(source, { target: 'editor', grammar: partOfFile }).some(
+  return blockEvents(source, { target: 'editor', extensions: [partOfFile] }).some(
     ([kind, token]) => kind === 'enter' && token.type === type &&
       token.start.offset === start && token.end.offset === end
   );

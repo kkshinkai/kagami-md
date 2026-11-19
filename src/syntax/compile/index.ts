@@ -19,9 +19,8 @@ export { point } from './tree.js';
 /**
  * Turn markdown into a syntax tree.
  *
- * Kagami: a file is read whole, with the grammar of a whole document,
- * CJK-friendly; the text of a field is read with the grammar of its field, as
- * text or string content.
+ * Kagami: callers supply `extensions` for the target grammar and `contentType`
+ * for document, text, or string compilation.
  *
  * @param value
  *   Markdown to parse.

@@ -9,8 +9,9 @@
 //
 // A grammar is a set of constructs: for each content type, which constructs may start at which
 // character, and in what order they are tried. Each grammar here is put together from nothing,
-// out of the constructs it needs. Nothing is taken in whole and then cut back, and nobody outside
-// this file assembles a grammar.
+// out of the constructs it needs. Nothing is taken in whole and then cut back. Optional
+// extensions (`tag`, `wikilink`) are exported alongside the base grammars and combined by the
+// caller when enabled.
 //
 // There are two kinds. A document is read in two phases: its blocks first, with the text of a
 // paragraph taken only as far as its lines, and then the text of each field on its own. So there
@@ -47,7 +48,7 @@ import * as gfmAutolinkLiteral from './text/gfm-autolink-literal.js';
 import * as gfmStrikethrough from './text/gfm-strikethrough.js';
 import * as gfmTaskListItem from './text/gfm-task-list-item.js';
 import * as hardBreakEscape from './text/hard-break-escape.js';
-import * as tag from './text/tag.js';
+import { text as tagText } from './text/tag.js';
 import * as highlight from './text/highlight.js';
 import * as imageSize from './text/image-size.js';
 import * as htmlText from './text/html-text.js';
@@ -60,7 +61,7 @@ import * as labelStartImage from './text/label-start-image.js';
 import * as labelStartLink from './text/label-start-link.js';
 import * as lineEnding from './text/line-ending.js';
 import * as mathText from './text/math-text.js';
-import * as wikilink from './text/wikilink.js';
+import { text as wikilinkText } from './text/wikilink.js';
 
 // Every table a tokenizer may look into, empty.
 const blank: Extension = {
@@ -138,9 +139,11 @@ const linesOnly: Extension[] = [
 
 // Text.
 
-// A wiki link is Kagami's own. It is listed before the brackets wherever it is read, because
-// it is tried before a link label, for `[[` and `![[`.
-const wikilinks: Extension[] = [{ text: wikilink.text }];
+// Optional inline syntax, combined after a base grammar when enabled. Appending `wikilink`
+// after a base grammar places it in front of the brackets, so it is tried before a link label
+// for `[[` and `![[`.
+export const tag: Extension = { text: tagText };
+export const wikilink: Extension = { text: wikilinkText };
 
 // Brackets. A footnote call is tried before a link label, for `[^`. The footnote's entry for
 // `]` is added after the label end.
@@ -188,7 +191,6 @@ const dialect: Extension[] = [
     insideSpan: highlight.insideSpan,
     attentionMarkers: highlight.attentionMarkers,
   },
-  { text: tag.text },
   { text: emoji.text },
 ];
 
@@ -206,7 +208,6 @@ const fileContent: Extension[] = [
   { text: edgeMark.text },
   ...dialect,
   ...math,
-  ...wikilinks,
   ...brackets,
   ...literalAutolinks,
   ...inline,
@@ -227,7 +228,6 @@ export const phrasingDocument: FullNormalizedExtension = grammar(
   { text: gfmTaskListItem.text },
   ...dialect,
   ...math,
-  ...wikilinks,
   ...brackets,
   ...literalAutolinks,
   ...inline,
@@ -244,13 +244,10 @@ export const fileBlocks: FullNormalizedExtension = grammar(
   ...fileBlockLevel, ...linesOnly, { text: edgeMark.text },
 );
 
-// ZWSP edge mark: A field keeps its leading character and has no indented code construct.
-export const fieldBlocks: FullNormalizedExtension = grammar(...blockLevel, ...linesOnly);
-
 // Phrasing grammars disable indented code. Inline constructs consume continuation indentation.
 const noIndentedCode: Extension = { disable: { null: ['codeIndented'] } };
 const phrasingText: Extension[] = [
-  ...dialect, ...math, ...wikilinks, ...brackets, ...literalAutolinks, ...inline, ...strings, noIndentedCode,
+  ...dialect, ...math, ...brackets, ...literalAutolinks, ...inline, ...strings, noIndentedCode,
 ];
 
 /**

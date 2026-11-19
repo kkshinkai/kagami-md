@@ -9,6 +9,5 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   base: './',
-  resolve: { conditions: ['kagami:source', 'module', 'browser', 'development|production'] },
   build: { outDir: 'dist', emptyOutDir: true },
 });

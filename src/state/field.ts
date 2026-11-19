@@ -5,13 +5,13 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { bindings } from './bindings.js';
+import { BindingState } from './bindings.js';
 import { repairPhrasing, type Frontier, type ReferenceLabels } from '../syntax/index.js';
 import type { Fragment, Mark, Node, ResolvedPos } from 'prosemirror-model';
 import { TextSelection, type Selection, type Transaction } from 'prosemirror-state';
 import type { Mapping } from 'prosemirror-transform';
 import { fieldSource, fieldOptions } from '../parse/field.js';
-import { parse } from '../parse/parse.js';
+import { parseContent } from '../parse/parse.js';
 
 /** A source range and the marks and atom width assigned by its reading. */
 interface FieldPiece {
@@ -25,8 +25,8 @@ interface FieldPiece {
 export function setContent(tr: Transaction, position: number, frontier: Frontier, text: string, references: ReferenceLabels, sourceStart = 0): void {
   const field = tr.doc.nodeAt(position);
   if (!field) throw new RangeError('Missing phrasing');
-  bindings.record(tr, position, references);
-  const content = parse.content(frontier, text, tr.doc.type.schema);
+  BindingState.record(tr, position, references);
+  const content = parseContent(frontier, text, tr.doc.type.schema);
   if (field.content.eq(content)) return;
   const pieces = classify(frontier, content, sourceStart);
   const start = tr.steps.length;

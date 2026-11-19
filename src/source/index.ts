@@ -5,6 +5,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-export { read, source } from './source.js';
+export { Source, read, readSyntax } from './source.js';
 export type { RetainedBlock, RetainedList } from './retained.js';
 export type { EditorLoc, SourceLoc } from './location.js';

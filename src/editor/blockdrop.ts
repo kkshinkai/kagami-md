@@ -7,13 +7,14 @@
 
 import { schema } from '../types/schema.js';
 import { Fragment, Slice, type Node } from 'prosemirror-model';
-import { history } from '../state/history.js';
+import { isolateHistory } from '../state/history.js';
 import { type EditorState, type Transaction } from 'prosemirror-state';
 import { insert, split, replace, remove, carrier } from '../transform/transform.js';
-import { unparse } from '../unparse/unparse.js';
-import { source as sourceField } from '../source/index.js';
-import { Bindings, parseBlocks } from '../syntax/index.js';
-import { parse } from '../parse/parse.js';
+import { defaultUnparseOptions, unparseSlice, type unparse } from '../unparse/unparse.js';
+import { Source } from '../source/index.js';
+import { defaultParser, getParser } from '../state/parser.js';
+import type { Parser } from '../syntax/index.js';
+import { parseBlocks } from '../parse/parse.js';
 import {
   BlockSelection,
   isBlockRange,
@@ -50,7 +51,7 @@ function contentStart(parent: SelectableBlock | null): number {
  * characters become Markdown only when it leaves YAML; a Markdown block becomes
  * one scalar string when it enters a collection. */
 function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Node,
-  options: unparse.Options): Fragment | null {
+  options: unparse.Options, parser: Parser): Fragment | null {
   const yaml =
     parent.type === schema.nodes.yamlMapping || parent.type === schema.nodes.yamlSequence;
   const nodes: Node[] = [];
@@ -59,7 +60,7 @@ function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Nod
     let value = block.node.type === schema.nodes.yamlPair ? block.node.child(1) : block.node;
     if (yaml) {
       if (!value.type.isInGroup('yamlNode')) {
-        const source = unparse.slice(new Slice(Fragment.from(value), 0, 0), doc.resolve(block.from), options);
+        const source = unparseSlice(new Slice(Fragment.from(value), 0, 0), doc.resolve(block.from), options);
         value = documentSchema.nodes.yamlScalar.create({ tag: 'string' }, source ? documentSchema.text(source) : null);
       }
       if (parent.type === schema.nodes.yamlSequence) nodes.push(value);
@@ -72,8 +73,8 @@ function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Nod
     } else if (value.type.isInGroup('yamlNode')) {
       if (value.type !== schema.nodes.yamlScalar || value.attrs.tag !== 'string') return null;
       const source = value.textContent;
-      const content = parse.blocks(
-        parseBlocks(source, { target: 'editor' }, Bindings.none),
+      const content = parseBlocks(
+        parser.parseBlocks(source),
         source,
         documentSchema,
       );
@@ -153,7 +154,7 @@ class DropTargets {
         );
       const probe = crossingYAML
         // The probe asks only whether the nodes fit, never what their strings say.
-        ? yamlPayload(this.doc, this.payload, target.parent, unparse.defaults)
+        ? yamlPayload(this.doc, this.payload, target.parent, defaultUnparseOptions, defaultParser)
         : Fragment.fromArray(
             types.map((type) => type.createAndFill()).filter((node): node is Node => node !== null),
           );
@@ -190,7 +191,7 @@ export function moveBlocks(state: EditorState, source: BlockRange, intent: DropI
   if (!current || (intent.boundary >= source.from && intent.boundary <= source.to)) return null;
   const blocks = selectedBlocks(state.doc, source);
   if (!blocks.length) return null;
-  const tr = history.isolate(state.tr);
+  const tr = isolateHistory(state.tr);
   let target = intent.boundary;
   let at = tr.doc.resolve(target);
   const items = blocks.every((block) => block.node.type === schema.nodes.listItem);
@@ -215,7 +216,7 @@ export function moveBlocks(state: EditorState, source: BlockRange, intent: DropI
       (block) => block.node.type === schema.nodes.yamlPair || block.node.type.isInGroup('yamlNode'),
     )
   ) {
-    const converted = yamlPayload(state.doc, blocks, parent, sourceField.get(state).options);
+    const converted = yamlPayload(state.doc, blocks, parent, Source.get(state).options, getParser(state));
     if (!converted) return null;
     content = converted;
   } else {
