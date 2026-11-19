@@ -27,7 +27,8 @@ jobs:
           node-version: lts/*
       # The public repository has no lockfile; CI would otherwise demand one.
       - run: pnpm install --no-frozen-lockfile
-      - run: pnpm --filter "@kagami/playground..." build
+      - run: pnpm build
+      - run: pnpm --filter @kagami/playground build
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
