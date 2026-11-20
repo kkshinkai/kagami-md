@@ -46,8 +46,14 @@ export function parseNode(syntax: Syntax, content: Fragment | readonly Node[], s
 }
 
 /** Front matter holds decoded YAML or a literal field, never Markdown. */
-export function parseFrontMatter(syntax: FrontMatterSyntax, schema: Schema): Node {
-  return new ParseContext('', schema).frontMatter(syntax);
+export function parseFrontMatter(syntax: FrontMatterSyntax, schema: Schema, previous?: Node): Node {
+  const built = new ParseContext('', schema).frontMatter(syntax);
+  const trailing = previous?.attrs.spelling?.trailingBlankLines;
+  if (trailing === undefined) return built;
+  return built.type.create(
+    { ...built.attrs, spelling: { ...built.attrs.spelling, trailingBlankLines: trailing } },
+    built.content,
+  );
 }
 
 /** The source and schema shared by a syntax-to-document walk. */

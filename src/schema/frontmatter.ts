@@ -53,7 +53,7 @@ export function correctFrontmatter(tr: Transaction, fields: CorrectionFields, ol
     } else if (position === 0 && node.type === schema.nodes.rawFrontMatter) {
       const parsed = getParser(old).parseFile(frontMatterSource(node)).document.frontMatter;
       if (parsed?.type === 'yamlFrontMatter')
-        replace(tr, 0, node.nodeSize, new Slice(Fragment.from(parseFrontMatter(parsed, schema)), 0, 0));
+        replace(tr, 0, node.nodeSize, new Slice(Fragment.from(parseFrontMatter(parsed, schema, node)), 0, 0));
     }
   }
 }

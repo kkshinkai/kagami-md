@@ -12,7 +12,7 @@ import {
 } from '../syntax/index.js';
 import type { Closing, ListPattern } from './unparsed.js';
 import { schema } from '../types/schema.js';
-import { fieldSource } from '../parse/field.js';
+import { fieldSource, splitDestinationSpace } from '../parse/field.js';
 
 /** The source text of one inline node. */
 export function inlineNode(node: Node): string {
@@ -116,8 +116,9 @@ export function definitionFrames(node: Node): readonly FieldFrame[] {
   const destinationText = fieldSource(destination);
   const destinationSpelling: LinkDestinationSpelling | null = destination.attrs.spelling;
   let angle = destinationSpelling?.inAngleBrackets === true;
-  if (!isLinkDestination(destinationText, angle)) angle = !angle;
-  if (!isLinkDestination(destinationText, angle))
+  const trimmed = node.childCount === 3 ? splitDestinationSpace(destination).body : destinationText;
+  if (!isLinkDestination(trimmed, angle)) angle = !angle;
+  if (!isLinkDestination(angle ? destinationText : trimmed, angle))
     throw new RangeError('The definition destination has no framing that preserves its source');
   const result: FieldFrame[] = [
     { before: '[', after: ']:' },
@@ -136,4 +137,46 @@ export function definitionFrames(node: Node): readonly FieldFrame[] {
     after: delimiter === '(' ? ')' : delimiter
   });
   return result;
+}
+
+/** Punctuation and first-line placement of a footnote definition's label. */
+export function footnoteLabelFrame(node: Node): {
+  before: string;
+  after: string;
+  gap: string;
+  startsOnLabelLine: boolean;
+} {
+  const spelling = node.attrs.spelling;
+  const startsOnLabelLine = spelling?.startsOnLabelLine !== false && !(spelling?.start > 0);
+  return {
+    before: '[^',
+    after: ']:',
+    gap: spelling?.whitespaceAfterLabel ?? ' ',
+    startsOnLabelLine,
+  };
+}
+
+/** Canonical GFM table lines constructed solely from semantic alignments and cell text. */
+export function canonicalTableLines(table: Node): string[] {
+  const alignments: readonly (string | null)[] = table.attrs.alignments ?? [];
+  const cols = table.firstChild?.childCount ?? alignments.length;
+  const delimiters: string[] = [];
+  for (let col = 0; col < cols; col++) {
+    const align = alignments[col];
+    if (align === 'left') delimiters.push(':---');
+    else if (align === 'center') delimiters.push(':---:');
+    else if (align === 'right') delimiters.push('---:');
+    else delimiters.push('---');
+  }
+  const lines: string[] = [];
+  for (let index = 0; index < table.childCount; index++) {
+    const row = table.child(index);
+    const cells: string[] = [];
+    for (let col = 0; col < row.childCount; col++) {
+      cells.push(fieldSource(row.child(col).firstChild!));
+    }
+    lines.push('| ' + cells.join(' | ') + ' |');
+    if (index === 0) lines.push('| ' + delimiters.join(' | ') + ' |');
+  }
+  return lines;
 }

@@ -5,8 +5,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { CalloutSyntax, Parser, type BlockSyntax } from '../syntax/index.js';
-import type { Node } from 'prosemirror-model';
+import { CalloutSyntax, LinkReferenceDefinitionSyntax, Parser, type BlockSyntax } from '../syntax/index.js';
+import { Fragment, type Node } from 'prosemirror-model';
 import type { Transform } from 'prosemirror-transform';
 import { fieldSource } from '../parse/field.js';
 import { looseList, setAttributes } from './frames.js';
@@ -29,6 +29,8 @@ export function realizeParagraph(tr: Transform, pos: number, blocks: readonly Bl
   if (!blocks.length) return position => position;
   retainHTMLBlankLines(tr, pos, blocks[0]!, text);
   const node = tr.doc.nodeAt(pos)!;
+  const inside = keep && keep.from >= pos + 1 && keep.to <= pos + node.nodeSize - 1;
+  const caret = inside && keep.from === keep.to ? keep.from - pos - 1 + offset : undefined;
   const authored = new Map<Shape, Node>();
   const reading = readingShapes(blocks, text, tr.doc.type.schema,
     [{ start: offset, end: offset + node.content.size, origin: pos + 1 }], authored);
@@ -42,10 +44,62 @@ export function realizeParagraph(tr: Transform, pos: number, blocks: readonly Bl
     else spelling[name] = node.attrs.spelling?.[name];
     authored.set(shape, block.type.create({ ...block.attrs, spelling }, block.content));
   }
-  const inside = keep && keep.from >= pos + 1 && keep.to <= pos + node.nodeSize - 1;
+  const retainedSpace = caret !== undefined
+    && retainActiveDestinationShape(reading.shapes, blocks, text, pos, offset, caret, authored);
   const changed = reshapeBlocks(tr, pos, pos + node.nodeSize, reading.shapes, authored, keep);
   refreshEnclosingLists(tr, pos);
+  if (retainedSpace) return changed.map;
   return inside ? position => changed.locate(pos + reading.locate(position - pos - 1 + offset)) : changed.map;
+}
+
+/** Extend a realized bare link destination shape to retain active trailing spaces from the paragraph. */
+function retainActiveDestinationShape(shapes: Shape[], blocks: readonly BlockSyntax[], text: string,
+  pos: number, offset: number, caret: number, authored: Map<Shape, Node>): boolean {
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index]!;
+    const shape = shapes[index];
+    if (!(block instanceof LinkReferenceDefinitionSyntax) || !block.titleField ||
+        block.destinationField.spelling.inAngleBrackets || shape?.kind !== 'children') {
+      continue;
+    }
+    const titleOpen = block.titleField.contentStart - 1;
+    if (caret <= block.destinationField.end || caret >= titleOpen) continue;
+    const trailing = text.slice(block.destinationField.end, caret);
+    if (!/^[ \t]+$/.test(trailing)) continue;
+    const destShape = shape.children[1];
+    if (destShape?.kind !== 'text') continue;
+    const rangeFrom = pos + 1 + block.destinationField.end - offset;
+    const rangeTo = pos + 1 + caret - offset;
+    const nextPieces = [...destShape.text];
+    const last = nextPieces.at(-1);
+    if (last?.kind === 'range' && last.to === rangeFrom) {
+      nextPieces[nextPieces.length - 1] = { kind: 'range', from: last.from, to: rangeTo };
+    } else {
+      nextPieces.push({ kind: 'range', from: rangeFrom, to: rangeTo });
+    }
+    const nextDestShape: Shape = { ...destShape, text: nextPieces };
+    const oldDestNode = authored.get(destShape)!;
+    const schema = oldDestNode.type.schema;
+    const nextDestNode = oldDestNode.copy(oldDestNode.content.append(Fragment.from(schema.text(trailing))));
+    authored.set(nextDestShape, nextDestNode);
+    const nextChildren = [...shape.children];
+    nextChildren[1] = nextDestShape;
+    const nextDefShape: Shape = { ...shape, children: nextChildren };
+    const oldDefNode = authored.get(shape)!;
+    const defChildren: Node[] = [];
+    oldDefNode.forEach((child, _off, childIndex) => {
+      defChildren.push(childIndex === 1 ? nextDestNode : child);
+    });
+    const restGap = text.slice(caret, titleOpen);
+    const nextDefNode = oldDefNode.type.createChecked(
+      { ...oldDefNode.attrs, spelling: { ...oldDefNode.attrs.spelling, whitespaceBeforeTitle: restGap } },
+      defChildren,
+    );
+    authored.set(nextDefShape, nextDefNode);
+    shapes[index] = nextDefShape;
+    return true;
+  }
+  return false;
 }
 
 /** Newly parsed leading lines in an HTML field belong to its containing boundary. */

@@ -65,7 +65,7 @@ export class HTMLSerializer extends DOMSerializer {
     const parser = this.parser();
     const context = new SerializeContext(this, document, parser, this.document?.());
     context.fragment(fragment, output);
-    if (fragment.firstChild?.isBlock && output.firstChild?.nodeType === 1) {
+    if (fragment.firstChild?.isBlock && output.firstChild?.nodeType === 1 && validFragmentTree(fragment)) {
       (output.firstChild as HTMLElement).setAttribute(
         treeAttribute, JSON.stringify(selectedTree(fragment, parser).toJSON()),
       );
@@ -183,6 +183,14 @@ class SerializeContext {
       this.fragment(node.content, output, node);
       return;
     }
+    if (node.type === schema.nodes.linkReferenceDefinition && !node.type.validContent(node.content)) {
+      const paragraph = this.dom.createElement('p');
+      paragraph.textContent = unparseSlice(
+        new Slice(Fragment.from(node), 2, 2), schema.nodes.document.createAndFill()!.resolve(0), defaultUnparseOptions,
+      );
+      output.appendChild(paragraph);
+      return;
+    }
     const rendered = DOMSerializer.renderSpec(this.dom, this.serializer.nodes[node.type.name]!(node));
     if (annotatedBlocks.has(node.type) && node.type.validContent(node.content) && rendered.dom.nodeType === 1) {
       const element = rendered.dom as HTMLElement;
@@ -273,6 +281,15 @@ class SerializeContext {
 function sameStyle(a: Mark, b: Mark): boolean {
   return a.type === b.type && (a.attrs.destination ?? null) === (b.attrs.destination ?? null) &&
     (a.attrs.title ?? null) === (b.attrs.title ?? null);
+}
+
+function validFragmentTree(fragment: Fragment): boolean {
+  for (let index = 0; index < fragment.childCount; index++) {
+    const child = fragment.child(index);
+    if (!child.isInline && (!child.type.validContent(child.content) || !validFragmentTree(child.content)))
+      return false;
+  }
+  return true;
 }
 
 /** Native slicing keeps marks for partly selected occurrences; carry only complete annotations. */

@@ -6,15 +6,15 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { RetainedBlock, RetainedList } from '../source/index.js';
-import { fieldSource, frontMatterSource } from '../parse/field.js';
+import { fieldSource, frontMatterSource, splitDestinationSpace } from '../parse/field.js';
 import { Fragment, type Node, type ResolvedPos, type Slice } from 'prosemirror-model';
-import { fitsIndentedCode, fitsOnMarkerLine, htmlBlockEnds, longestClosingFence, needsEdgeMark,
-  paragraphReactions, repairPhrasing, startsLinkTitle, measureWidth, type CalloutSpelling,
+import { fitsIndentedCode, fitsOnMarkerLine, htmlBlockEnds, isLinkDestination, isLinkTitle, longestClosingFence,
+  needsEdgeMark, paragraphReactions, repairPhrasing, startsLinkTitle, measureWidth, type CalloutSpelling,
   Parser, type FootnoteDefinitionSpelling,
   type MathBlockSpelling, type TableSpelling } from '../syntax/index.js';
 import { schema, pendingMarks, type CodeSpelling, type HeadingSpelling } from '../types/schema.js';
 import {
-  after, blanks, definitionFrames, expressesEmpty, indentation, inlineNode, itemMarker, itemPattern,
+  after, blanks, definitionFrames, expressesEmpty, footnoteLabelFrame, indentation, inlineNode, itemMarker, itemPattern,
   listPattern, quoteMarker
 } from './frames.js';
 import { frontMatterFence, markerPattern, opensAfterMarker } from './markers.js';
@@ -70,10 +70,12 @@ export function unparseAlone(node: Node): Unparsed {
 export function unitSeparator(left: RetainedBlock | RetainedList, right: RetainedBlock | RetainedList,
   list: Node | null): number {
   const loose = list?.attrs.spelling?.tight === false;
-  const parent = list ? { sameList: true, loose }
-    : 'items' in right ? { sameList: false, loose: true,
-      marker: itemMarker(right.node, right.node.firstChild!, 0, listPattern(right.node, left.closing.openList)) }
-    : null;
+  let parent: BoundaryParent | null = null;
+  if (list) parent = { sameList: true, loose };
+  else if ('items' in right) {
+    const marker = itemMarker(right.node, right.node.firstChild!, 0, listPattern(right.node, left.closing.openList));
+    parent = { sameList: false, loose: true, marker };
+  }
   const range = blockBoundary(right.node, left.closing, right.opening, parent);
   if (!range) throw new RangeError('The units have no boundary that preserves their reading');
   return constrainBoundary(requestedBoundary(left.node, right.node, list ? Number(loose) : 1), range);
@@ -93,16 +95,52 @@ export function unitSeparator(left: RetainedBlock | RetainedList, right: Retaine
  */
 export function unparseSlice(slice: Slice, from: ResolvedPos, options: unparse.Options): string {
   let content = slice.content;
-  for (let open = Math.min(slice.openStart, slice.openEnd); open && content.childCount === 1; open--)
-    content = content.firstChild!.content;
+  let openStart = slice.openStart;
+  let openEnd = slice.openEnd;
+  for (let open = Math.min(openStart, openEnd); open && content.childCount === 1; open--) {
+    const only = content.firstChild!;
+    if ((only.type === schema.nodes.linkReferenceDefinition ||
+        only.type === schema.nodes.footnoteDefinition && only.firstChild?.type === schema.nodes.footnoteLabel) &&
+        only.childCount > 1) break;
+    content = only.content;
+    openStart--;
+    openEnd--;
+  }
   if (content.firstChild?.isInline) return content.content.map(inlineNode).join('');
   if (from.parent.type === schema.nodes.yamlSequence &&
       content.content.every(node => node.type.isInGroup('yamlNode')))
     content = Fragment.from(from.parent.type.create(null, content));
+  const firstType = content.firstChild?.type;
+  if (firstType === schema.nodes.linkLabel || firstType === schema.nodes.linkDestination ||
+      firstType === schema.nodes.linkTitle || firstType === schema.nodes.footnoteLabel) {
+    for (let depth = from.depth; depth >= 1; depth--) {
+      const ancestor = from.node(depth);
+      if (ancestor.type === schema.nodes.linkReferenceDefinition ||
+          ancestor.type === schema.nodes.footnoteDefinition) {
+        content = Fragment.from(ancestor.copy(content));
+        if (openStart > 0) openStart++;
+        if (openEnd > 0) openEnd++;
+        break;
+      }
+    }
+  }
   // The slice stands as a document of its own.
-  return new UnparseContext(true, options).sequence({
+  const root = schema.nodes.document.create(null, content);
+  const openStartNodes = new Set<Node>();
+  let startNode: Node | null = root.firstChild;
+  for (let depth = 1; depth < openStart && startNode; depth++) {
+    openStartNodes.add(startNode);
+    startNode = startNode.firstChild;
+  }
+  const openEndNodes = new Set<Node>();
+  let endNode: Node | null = root.lastChild;
+  for (let depth = 1; depth < openEnd && endNode; depth++) {
+    openEndNodes.add(endNode);
+    endNode = endNode.lastChild;
+  }
+  return new UnparseContext(true, options, openStartNodes, openEndNodes).sequence({
     column: 0, laterColumn: 0, preceding: null, followed: false, terminated: false,
-    parent: schema.nodes.document.create(null, content), index: 0, loose: true,
+    parent: root, index: 0, loose: true,
   }, 1, false).body;
 }
 
@@ -180,7 +218,9 @@ export function dropsChild(parent: Node, index: number, kept: boolean, preceded:
 
 /** Settings shared by a walk over the supplied document nodes. */
 class UnparseContext {
-  constructor(readonly clipboard: boolean, readonly options: unparse.Options) {}
+  constructor(readonly clipboard: boolean, readonly options: unparse.Options,
+    readonly openStartNodes: ReadonlySet<Node> = new Set(),
+    readonly openEndNodes: ReadonlySet<Node> = new Set()) {}
 
   block(node: Node, context: DisambiguationContext): Unparsed {
     const margin = blockMargin(node, context);
@@ -209,6 +249,12 @@ class UnparseContext {
       case schema.nodes.listItem: return new ItemContext(this, node, context, margin).write();
       case schema.nodes.footnoteDefinition: return this.footnote(node, context, margin);
       case schema.nodes.linkReferenceDefinition: {
+        const atStart = this.clipboard && this.openStartNodes.has(node) && context.index === 0;
+        const atEnd = this.clipboard && this.openEndNodes.has(node) && context.index === context.parent.childCount - 1;
+        if (this.clipboard && (atStart || atEnd || !canFrameLinkDefinition(node))) {
+          const prefixMargin = atStart ? '' : margin;
+          return written(prefixMargin + slicedLinkDefinition(node, atStart, atEnd), 'text', column, false);
+        }
         const frames = definitionFrames(node);
         let body = margin;
         for (let index = 0; index < node.childCount; index++) {
@@ -422,11 +468,23 @@ class UnparseContext {
   }
 
   private footnote(node: Node, context: DisambiguationContext, margin: string): Unparsed {
+    if (this.clipboard && node.firstChild?.type !== schema.nodes.footnoteLabel) {
+      return this.sequence({
+        column: context.column, laterColumn: context.laterColumn,
+        preceding: context.preceding, followed: context.followed, terminated: context.terminated,
+        parent: node, index: 0, loose: true,
+      }, 1, false);
+    }
+    const atStart = this.clipboard && this.openStartNodes.has(node) && context.index === 0;
+    const atEnd = this.clipboard && this.openEndNodes.has(node) && context.index === context.parent.childCount - 1;
+    const labelOnlyEnd = atEnd && node.childCount === 1;
+    const headMargin = atStart ? '' : margin;
     const spelling: FootnoteDefinitionSpelling | null = node.attrs.spelling;
-    const head = '[^' + fieldSource(node.child(0)) + ']:';
-    const gap: string = spelling?.whitespaceAfterLabel ?? ' ';
+    const labelFrame = footnoteLabelFrame(node);
+    const head = (atStart ? '' : labelFrame.before) + fieldSource(node.child(0)) + (labelOnlyEnd ? '' : labelFrame.after);
+    const gap = labelFrame.gap;
     const children = writtenChildren(node, 1, this.options);
-    if (!children.length) return written(margin + head, 'footnoteDefinition', context.column + margin.length,
+    if (!children.length) return written(headMargin + head, 'footnoteDefinition', context.column + margin.length,
       false, { ...Closing.none, continuation: context.laterColumn + 4 });
     const first = node.child(children[0]!);
     const marginAffectsBody = first.type === schema.nodes.codeBlock || first.type === schema.nodes.mathBlock ||
@@ -442,7 +500,7 @@ class UnparseContext {
     }, 1, true, children);
     // The label owns all opening whitespace; the child's Opening identifies only structural margin.
     const ownedMargin = compact && body.opening ? body.opening.column - childColumn : 0;
-    const text = margin + head + (compact ? gap : '\n    ') +
+    const text = headMargin + head + (compact ? gap : '\n    ') +
       prefix(body.body.slice(ownedMargin), '', ' '.repeat(continuation), '', '');
     return written(text, 'footnoteDefinition', context.column + margin.length,
       !compact || opensAfterMarker(body.opening),
@@ -807,4 +865,46 @@ function bareQuote(prefix: string): string {
 function childBody(node: Node, body: string): string {
   if (!node.type.isInGroup('list')) return body;
   return '\n'.repeat(blanks(node, 'start')) + body + '\n'.repeat(blanks(node, 'end'));
+}
+
+/** Whether a link definition fragment has complete fields that `definitionFrames` can write. */
+function canFrameLinkDefinition(node: Node): boolean {
+  if (!node.type.validContent(node.content)) return false;
+  const destination = node.child(1);
+  const text = fieldSource(destination);
+  const angle = destination.attrs.spelling?.inAngleBrackets === true;
+  const trimmed = node.childCount === 3 ? splitDestinationSpace(destination).body : text;
+  if (!isLinkDestination(trimmed, angle) && !isLinkDestination(text, !angle)) return false;
+  const title = node.maybeChild(2);
+  if (!title) return true;
+  const titleText = fieldSource(title);
+  return (['"', "'", '('] as const).some(delimiter => isLinkTitle(titleText, delimiter));
+}
+
+/** Write a sliced link definition's selected fields and the punctuation strictly between them. */
+function slicedLinkDefinition(node: Node, openStart: boolean, openEnd: boolean): string {
+  const parts: string[] = [];
+  for (let index = 0; index < node.childCount; index++) {
+    const child = node.child(index);
+    const first = index === 0;
+    const last = index === node.childCount - 1;
+    const text = fieldSource(child);
+    if (child.type === schema.nodes.linkLabel) {
+      parts.push((first && openStart ? '' : '[') + text + (last && openEnd ? '' : ']:'));
+    } else if (child.type === schema.nodes.linkDestination) {
+      const angle = child.attrs.spelling?.inAngleBrackets === true;
+      const gap = first ? '' : (node.attrs.spelling?.whitespaceAfterLabel ?? ' ');
+      const open = angle && !(first && openStart) ? '<' : '';
+      const close = angle && !(last && openEnd) ? '>' : '';
+      parts.push(gap + open + text + close);
+    } else if (child.type === schema.nodes.linkTitle) {
+      const delimiter: string = child.attrs.spelling?.delimiter ?? '"';
+      const closing = delimiter === '(' ? ')' : delimiter;
+      const gap = first ? '' : (node.attrs.spelling?.whitespaceBeforeTitle ?? ' ');
+      const open = first && openStart ? '' : delimiter;
+      const close = last && openEnd ? '' : closing;
+      parts.push(gap + open + text + close);
+    }
+  }
+  return parts.join('');
 }

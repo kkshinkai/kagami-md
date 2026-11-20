@@ -333,10 +333,12 @@ export class Parser {
       case 'linkDestination':
       case 'linkTitle':
       case 'footnoteLabel': {
+        const grammarKey = options.phrasing === 'linkDestination' && options.canOpenTitle === false
+          ? 'linkTitle' : options.phrasing;
         const { children, references } = fromMarkdown(text, {
           target: 'editor',
           cjkFriendly: this.cjkFriendly,
-          constructs: this.grammars.stringPhrasings[options.phrasing],
+          constructs: this.grammars.stringPhrasings[grammarKey],
           contentType: 'string',
           bindings: options.bindings,
           config: this.phrasingConfig,
@@ -379,7 +381,9 @@ export class Parser {
       case 'linkDestination':
       case 'linkTitle':
       case 'footnoteLabel': {
-        grammar = this.grammars.stringPhrasings[options.phrasing];
+        const grammarKey = options.phrasing === 'linkDestination' && options.canOpenTitle === false
+          ? 'linkTitle' : options.phrasing;
+        grammar = this.grammars.stringPhrasings[grammarKey];
         break;
       }
       default: {
@@ -435,6 +439,11 @@ export namespace Parser {
      * declaration at its start is recognized.
      */
     firstInBlockQuote?: boolean;
+    /**
+     * The link destination is bare and its definition has no title yet, so a title delimiter
+     * after trailing whitespace is recognized (default: `true`).
+     */
+    canOpenTitle?: boolean;
     /** Labels defined elsewhere in the document. */
     bindings?: Bindings;
   }

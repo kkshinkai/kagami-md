@@ -12,7 +12,7 @@ import {
 import { Fragment, type Node } from 'prosemirror-model';
 import { TextSelection, type Transaction } from 'prosemirror-state';
 import { type BindingSet } from '../parse/bindings.js';
-import { fieldSource } from '../parse/field.js';
+import { fieldSource, splitDestinationSpace } from '../parse/field.js';
 import { keepOuterFrames } from '../transform/frames.js';
 import {
   definitionReading, definitionShapes, quoteReading, readingShapes,
@@ -136,8 +136,10 @@ export function rereadDefinition(tr: Transaction, position: number, parser: Pars
     if (node.attrs.identifier !== '') update(tr, position, { identifier: '' });
     return null;
   }
+  const retainTrailingSpace = !blurred && node.type === tr.doc.type.schema.nodes.linkReferenceDefinition &&
+    node.childCount === 3 && tr.selection.$head.parent === node.child(1);
   const start = tr.steps.length;
-  const reading = definitionReading(tr, position, parser, bindings);
+  const reading = definitionReading(tr, position, parser, bindings, retainTrailingSpace);
   if (!reading) {
     refreshDefinitionMeaning(tr, position);
     return null;
@@ -178,11 +180,19 @@ export function refreshDefinitionMeaning(tr: Transaction, position: number): voi
   const identifier: string = node.attrs.identifier;
   const types = node.type.schema.nodes;
   if (node.type === types.footnoteDefinition) update(tr, position, { identifier });
-  else if (node.type === types.linkReferenceDefinition) update(tr, position, {
-    identifier, destination: stringMeaning(node.child(1)),
-    title: node.childCount === 3 ? stringMeaning(node.child(2)) : null,
-  });
-  else throw new RangeError('Expected a definition frame');
+  else if (node.type === types.linkReferenceDefinition) {
+    const destinationField = node.child(1);
+    let destination = stringMeaning(destinationField);
+    if (node.childCount === 3) {
+      const { trailing } = splitDestinationSpace(destinationField);
+      if (trailing.length > 0) destination = destination.slice(0, destination.length - trailing.length);
+    }
+    update(tr, position, {
+      identifier,
+      destination,
+      title: node.childCount === 3 ? stringMeaning(node.child(2)) : null,
+    });
+  } else throw new RangeError('Expected a definition frame');
 }
 
 /** Read semantic characters from the marks already produced by string transduction. */

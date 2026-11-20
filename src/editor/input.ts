@@ -6,7 +6,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { DOMParser, DOMSerializer, type Mark, type ParseRule, type Schema } from 'prosemirror-model';
-import { Plugin, TextSelection, type EditorState, type Transaction, type PluginView } from 'prosemirror-state';
+import { Plugin, Selection, TextSelection, type EditorState, type Transaction, type PluginView } from 'prosemirror-state';
 import { tableEditingKey } from 'prosemirror-tables';
 import type { EditorView, MarkView, MarkViewConstructor } from 'prosemirror-view';
 import { normalizationKey, normalizeTextSelection } from '../state/normalization.js';
@@ -22,6 +22,7 @@ import { frontmatterInput } from '../schema/frontmatter.js';
 import { isHistoryTransaction } from 'prosemirror-history';
 import { sourceEditingSelection } from './reveal.js';
 import { schema } from '../types/schema.js';
+import { remove } from '../transform/transform.js';
 import type { DOMNode } from './dom.js';
 import type { KagamiMD } from './editor.js';
 import { PluginDesc, PluginRank } from './plugin.js';
@@ -32,8 +33,28 @@ export function input(): PluginDesc[] {
     PluginDesc.viewState(compositionInput, PluginRank.High),
     PluginDesc.viewState(focusInput, PluginRank.High),
     PluginDesc.viewState(selection),
+    PluginDesc.viewState(crossFieldTextInput),
     PluginDesc.view(markReading),
   ];
+}
+
+/** Typing over a selection spanning multiple fields removes the span through structural rules first. */
+function crossFieldTextInput(): Plugin {
+  return new Plugin({
+    props: {
+      handleTextInput(view, from, to, text) {
+        if (from >= to) return false;
+        const left = view.state.doc.resolve(from);
+        const right = view.state.doc.resolve(to);
+        if (left.sameParent(right)) return false;
+        const tr = view.state.tr;
+        const pos = remove(tr, from, to);
+        const seam = Selection.near(tr.doc.resolve(pos));
+        view.dispatch(tr.setSelection(seam).insertText(text).scrollIntoView());
+        return true;
+      },
+    },
+  });
 }
 
 /** Prepare native input before it enters the document's transaction loop. */

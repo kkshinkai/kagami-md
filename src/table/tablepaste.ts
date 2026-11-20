@@ -33,9 +33,8 @@ export function tablePaste(view: EditorView, event: ClipboardEvent, slice: Slice
   }
 
   const tr = state.tr;
-  const end = state.selection.to;
-  replace(tr, state.selection.from, end, new Slice(content, 0, 0));
-  tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(end, 1)), -1));
+  const after = replace(tr, state.selection.from, state.selection.to, new Slice(content, 0, 0));
+  tr.setSelection(TextSelection.near(tr.doc.resolve(after), -1));
   view.dispatch(isolateHistory(tr).setMeta('paste', true).setMeta('uiEvent', 'paste').scrollIntoView());
   return true;
 }

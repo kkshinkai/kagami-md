@@ -11,6 +11,7 @@ import { BlockSelection } from '../state/selection.js';
 import { toggleMark } from '../schema/format.js';
 import { applyTransaction, cursorContext, liftOut, ownsTextblock, splitAt } from '../schema/textblockcontext.js';
 import { lineBreakText } from '../schema/linebreak.js';
+import { guardCellBoundary } from '../table/table.js';
 import { insert, remove } from '../transform/transform.js';
 
 /** Expand partial text to both endpoint fields as a forward selection. Once those
@@ -43,13 +44,12 @@ export const toggleHighlight: PMCommand = toggleMark('highlight');
 /** Remove the selected content and place a text caret at its mapped start. */
 export const deleteSelection: PMCommand = (state, dispatch) => {
   const { selection } = state;
+  if (selection instanceof CellSelection) return guardCellBoundary(1)(state, dispatch);
   if (selection.empty) return false;
   if (dispatch) {
     const tr = state.tr;
-    remove(tr, selection.from, selection.to);
-    if (!(selection instanceof CellSelection)) {
-      tr.setSelection(Selection.near(tr.doc.resolve(tr.mapping.map(selection.from, -1))));
-    }
+    const seam = remove(tr, selection.from, selection.to);
+    tr.setSelection(Selection.near(tr.doc.resolve(seam)));
     dispatch(tr.scrollIntoView());
   }
   return true;
@@ -102,8 +102,9 @@ export const splitSelection: PMCommand = (state, dispatch) => {
   const { selection } = state;
   if (!(selection instanceof TextSelection) || selection.empty) return false;
   const tr = state.tr;
-  remove(tr, selection.from, selection.to);
-  if (!splitAt(tr, tr.selection.$from, 1)) return false;
+  const pos = remove(tr, selection.from, selection.to);
+  const seam = tr.doc.resolve(pos);
+  if (!splitAt(tr, seam, 1)) return false;
   dispatch?.(tr.scrollIntoView());
   return true;
 };

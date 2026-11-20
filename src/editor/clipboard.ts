@@ -24,6 +24,7 @@ import { inlineSource } from '../unparse/inline.js';
 import { tableText } from '../unparse/tabletext.js';
 import { unparseSlice } from '../unparse/unparse.js';
 import { Source } from '../source/index.js';
+import { deleteSelection } from '../command/commands.js';
 import type { DOMNode } from './dom.js';
 import { paste, plainTextSlice } from './paste.js';
 
@@ -40,6 +41,16 @@ export function clipboard(options: clipboard.Options = {}): Plugin {
     key: clipboardKey,
     props: {
       handleDOMEvents: {
+        cut(view, event) {
+          const { selection } = view.state;
+          if (selection.empty || !view.editable || view.composing || !event.clipboardData) return false;
+          const { dom, text } = view.serializeForClipboard(selection.content());
+          event.preventDefault();
+          event.clipboardData.clearData();
+          event.clipboardData.setData('text/html', dom.innerHTML);
+          event.clipboardData.setData('text/plain', text);
+          return deleteSelection(view.state, tr => view.dispatch(tr.setMeta('uiEvent', 'cut')));
+        },
         // Markdown source is pasted as source, before ProseMirror prefers its highlighting HTML.
         paste(view, event) {
           const markdown = markdownClipboardSource(event.clipboardData);
@@ -132,7 +143,7 @@ export class ClipboardParser extends DOMParser {
   override parseSlice(dom: DOMNode, options: ParseOptions & { context: ResolvedPos }): Slice {
     const carried = readCarriedTree(dom, this.schema);
     let field: Node | null = null;
-    if (carried) {
+    if (carried && validCarriedFragment(carried.fragment)) {
       if (!isInsideCarriedField(carried.fragment, carried.carrier)) return Slice.maxOpen(carried.fragment);
       field = carried.fragment.firstChild!;
       if (field.type === options.context?.parent.type) return new Slice(field.content, 0, 0);
@@ -182,6 +193,15 @@ export class ClipboardParser extends DOMParser {
       attrs: kind === 'footnoteLabel' ? { identifier } : undefined,
       getContent: () => Fragment.from(this.schema.text(source)) };
   }
+}
+
+function validCarriedFragment(fragment: Fragment): boolean {
+  for (let index = 0; index < fragment.childCount; index++) {
+    const child = fragment.child(index);
+    if (!child.isInline && (!child.type.validContent(child.content) || !validCarriedFragment(child.content)))
+      return false;
+  }
+  return true;
 }
 
 /** Consume the native paste origin before applying a transaction or invoking host callbacks. */

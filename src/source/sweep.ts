@@ -167,10 +167,10 @@ class SweepContext {
       for (;;) {
         // Past the last change taken in, old and new positions differ by a constant, up to the
         // next change: one that begins before the run ends on either side is taken in first. A
-        // change at the old end itself is taken in too: what it inserts there may belong to the
-        // unit before, so the old end does not map by the constant.
+        // change at either end itself is taken in too: what it inserts or removes there may belong
+        // to the unit before, so that end does not map by the constant.
         const following = changes[c];
-        if (following && (following.from - oldBase <= last.position || following.start - newBase < position ||
+        if (following && (following.from - oldBase <= last.position || following.start - newBase <= position ||
           last.index === old.count)) {
           to = Math.max(to, following.to - oldBase);
           end = Math.max(end, following.end - newBase);
@@ -183,6 +183,7 @@ class SweepContext {
           const newEnd = end + last.position - to;
           while (position < newEnd) position += parent.child(next++).nodeSize;
           if (position === newEnd) break;
+          if (following && following.start - newBase <= position) continue;
           to = last.position + position - newEnd;
           end = position;
         }
@@ -191,7 +192,8 @@ class SweepContext {
       const entries: Entry<T>[] = [];
       let k = first.index;
       let at = first.position;
-      for (let i = index, offset = start; i < next; i++) {
+      let offset = start;
+      for (let i = index; i < next; i++) {
         const node = parent.child(i);
         while (k < last.index && this.mapping!.map(oldBase + at, 1) < newBase + offset) at += old.get(k++).size;
         const found = k < last.index && this.mapping!.map(oldBase + at, 1) === newBase + offset;

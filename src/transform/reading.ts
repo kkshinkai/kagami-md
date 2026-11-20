@@ -7,12 +7,13 @@
 
 import {
   BlockSyntax, BlockQuoteSyntax, FootnoteDefinitionSyntax, HTMLTagBlockSyntax, InlineFieldClauseSyntax,
-  ListItemSyntax, LiteralBlockSyntax, ParagraphSyntax, StringFieldClauseSyntax, TableCellSyntax, TableSyntax,
-  TextBlockSyntax, isFootnoteLabel, isLinkDestination, isLinkLabel, isLinkTitle, type Bindings, type Parser,
+  LinkTitleSyntax, ListItemSyntax, LiteralBlockSyntax, ParagraphSyntax, StringFieldClauseSyntax,
+  TableCellSyntax, TableSyntax, TextBlockSyntax, isFootnoteLabel, isLinkDestination, isLinkLabel,
+  isLinkTitle, type Bindings, type Parser,
 } from '../syntax/index.js';
 import { Fragment, type Node, type Schema } from 'prosemirror-model';
 import type { Transform } from 'prosemirror-transform';
-import { fieldSource } from '../parse/field.js';
+import { fieldSource, splitDestinationSpace } from '../parse/field.js';
 import { parseContent, parseNode } from '../parse/parse.js';
 import {
   children, Correspondence, frontierPieces, sourcePieces, type Relabeled,
@@ -67,6 +68,8 @@ export class ReadingShapes {
   locate(point: number): number {
     let previous = 0;
     for (const { reading, node, at, pieces } of this.fields) {
+      if (reading.syntax instanceof LinkTitleSyntax && previous > 0 && point < reading.syntax.contentStart)
+        return previous;
       if (reading.emptyAt !== null && point < reading.syntax.end) return at + 1;
       let position = at + 1;
       for (const piece of pieces) {
@@ -83,7 +86,7 @@ export class ReadingShapes {
 
 /** Keep valid definition fields in their frame; only invalid fields need a block reading. */
 export function definitionReading(tr: Transform, position: number, parser: Parser,
-  bindings: Bindings): Reading | null {
+  bindings: Bindings, retainTrailingSpace = false): Reading | null {
   const node = tr.doc.nodeAt(position)!;
   const label = fieldSource(node.child(0));
   if (node.type === node.type.schema.nodes.footnoteDefinition) {
@@ -99,13 +102,14 @@ export function definitionReading(tr: Transform, position: number, parser: Parse
     return reading;
   }
   const destination = fieldSource(node.child(1));
+  const checkedDestination = retainTrailingSpace ? splitDestinationSpace(node.child(1)).body : destination;
   const title = node.maybeChild(2);
   const preferred = title?.attrs.spelling?.delimiter ?? '"';
   const alternatives = ['"', "'", '('] as const;
   const titleText = title ? fieldSource(title) : null;
   const delimiter = titleText === null ? undefined : [preferred, ...alternatives.filter(value => value !== preferred)]
     .find(value => isLinkTitle(titleText, value));
-  if (isLinkLabel(label) && isLinkDestination(destination, node.child(1).attrs.spelling?.inAngleBrackets) &&
+  if (isLinkLabel(label) && isLinkDestination(checkedDestination, node.child(1).attrs.spelling?.inAngleBrackets) &&
       (!title || delimiter)) {
     if (title && delimiter !== preferred)
       setAttributes(tr, position + node.child(0).nodeSize + node.child(1).nodeSize + 1,
@@ -253,7 +257,8 @@ class ReadContext {
     let offset = at + 1;
     let index = 0;
     for (const child of children(syntax)) {
-      const result = this.read(child, offset, syntax instanceof TableSyntax ? index === 0 : header);
+      const isHeader = syntax instanceof TableSyntax ? index === 0 : header;
+      const result = this.read(child, offset, isHeader);
       nodes.push(result.node);
       shapes.push(result.shape);
       fields.push(...result.fields);

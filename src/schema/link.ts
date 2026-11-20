@@ -6,7 +6,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import { DOMSerializer, type Node, type ResolvedPos } from 'prosemirror-model';
-import { chainCommands } from 'prosemirror-commands';
 import { keymap } from 'prosemirror-keymap';
 import { Plugin, Selection, TextSelection, type Command, type EditorState, type Transaction } from 'prosemirror-state';
 import type { EditorView, NodeView, ViewMutationRecord } from 'prosemirror-view';
@@ -24,7 +23,6 @@ export function link(): PluginDesc[] {
   return [
     PluginDesc.view(definitionViews),
     PluginDesc.viewState(definitionKeymapPlugin),
-    PluginDesc.viewState(definitionInput),
   ];
 }
 
@@ -172,39 +170,24 @@ function moveToDefinitionLineSide(side: -1 | 1, extend = false): Command {
   };
 }
 
-/** Delete each selected part in its own field, preserving the fields and their delimiters. */
-function deleteDefinitionFields(state: EditorState): Transaction | null {
-  const selection = state.selection;
-  if (!(selection instanceof TextSelection) || selection.empty) return null;
-  const first = DefinitionPosition.at(selection.$from);
-  const last = DefinitionPosition.at(selection.$to);
-  if (!first || !last || first.from !== last.from || first.index === last.index) return null;
-  const tr = state.tr;
-  // Descending edits leave the positions of the remaining fields unchanged.
-  for (let index = last.index; index >= first.index; index--) {
-    const field = first.fields[index]!;
-    const from = index === first.index ? selection.from : field.start;
-    const to = index === last.index ? selection.to : field.end;
-    if (to > from) tr.insertText('', from, to);
-  }
-  return tr.setSelection(TextSelection.create(tr.doc, selection.from)).scrollIntoView();
-}
-
-/** Apply deletion across definition fields as a ProseMirror command. */
-const deleteDefinitionSelection: Command = (state, dispatch) => {
-  const tr = deleteDefinitionFields(state);
-  if (!tr) return false;
-  dispatch?.(tr);
-  return true;
-};
-
 /** Remove a field's final character before the browser changes its empty DOM shape. */
 function emptyDefinitionField(direction: -1 | 1): Command {
   return (state, dispatch) => {
+    const selection = state.selection;
+    if (!(selection instanceof TextSelection) || !selection.empty) return false;
+    const head = selection.$head;
+    if (head.parent.type === state.schema.nodes.footnoteLabel) {
+      const start = head.start();
+      const end = head.end();
+      if ([...fieldSource(head.parent)].length !== 1 || selection.head !== (direction < 0 ? end : start))
+        return false;
+      dispatch?.(state.tr.insertText('', start, end).scrollIntoView());
+      return true;
+    }
     const position = DefinitionPosition.cursor(state);
     if (!position) return false;
     const field = position.fields[position.index]!;
-    if (field.end - field.start !== 1 || state.selection.head !== (direction < 0 ? field.end : field.start))
+    if ([...fieldSource(head.parent)].length !== 1 || selection.head !== (direction < 0 ? field.end : field.start))
       return false;
     dispatch?.(state.tr.insertText('', field.start, field.end).scrollIntoView());
     return true;
@@ -312,10 +295,10 @@ export const enterDefinition: Command = (state, dispatch) => {
 export const definitionLineStart = moveToDefinitionLineSide(-1);
 /** Move to the end of the current definition field line. */
 export const definitionLineEnd = moveToDefinitionLineSide(1);
-/** Delete across fields, or consume the boundary of an empty field. */
-export const deleteDefinitionBackward = chainCommands(deleteDefinitionSelection, emptyDefinitionField(-1));
-/** Delete across fields, or consume the boundary of an empty field. */
-export const deleteDefinitionForward = chainCommands(deleteDefinitionSelection, emptyDefinitionField(1));
+/** Remove the final character of a definition field cleanly before native DOM mutation. */
+export const deleteDefinitionBackward = emptyDefinitionField(-1);
+/** Remove the final character of a definition field cleanly before native DOM mutation. */
+export const deleteDefinitionForward = emptyDefinitionField(1);
 
 /** Field navigation preserves the definition's punctuation and source-line order. */
 function definitionKeymapPlugin(): Plugin {
@@ -335,18 +318,6 @@ function definitionKeymapPlugin(): Plugin {
   });
 }
 
-/** Typing across fields replaces the selection as a deletion followed by text input. */
-function definitionInput(): Plugin {
-  return new Plugin({ props: {
-    handleTextInput(view, _from, _to, text) {
-      const tr = deleteDefinitionFields(view.state);
-      if (!tr) return false;
-      view.dispatch(tr.insertText(text));
-      return true;
-    },
-  } });
-}
-
 /** A definition keeps its native fields mounted while source attributes change. */
 function definitionView(node: Node, view: EditorView): BlockView {
   const output = DOMSerializer.renderSpec(view.dom.ownerDocument, node.type.spec.toDOM!(node));
@@ -362,8 +333,24 @@ function definitionView(node: Node, view: EditorView): BlockView {
     get handle(): HandleTarget {
       return { kind: 'text', target: dom.firstElementChild as HTMLElement };
     },
-    update: next => next.type === node.type,
+    update(next) {
+      if (next.type !== node.type) return false;
+      if (next.type === schema.nodes.linkReferenceDefinition) refreshLinkDefinitionShells(dom, next);
+      return true;
+    },
   });
+}
+
+function refreshLinkDefinitionShells(dom: HTMLElement, node: Node): void {
+  const frames = definitionFrames(node);
+  for (let index = 1; index < node.childCount; index++) {
+    const fieldDom = dom.children[index];
+    const frame = frames[index];
+    if (!fieldDom || !frame) continue;
+    if (fieldDom.firstElementChild) fieldDom.firstElementChild.textContent = frame.before;
+    if (fieldDom.lastElementChild) fieldDom.lastElementChild.textContent = frame.after;
+    if (index === 1) fieldDom.setAttribute('data-link-definition-wrapper', frame.after === '>' ? 'angle' : 'bare');
+  }
 }
 
 /** Definition punctuation is the unparser's frame around its editable fields. Showing that
@@ -415,6 +402,10 @@ class DefinitionFieldView implements NodeView {
   private render(): void {
     const position = this.getPos();
     if (position === undefined) return;
+    if (this.opening.parentNode !== this.dom || this.contentDOM.parentNode !== this.dom ||
+        this.closing.parentNode !== this.dom) {
+      this.dom.replaceChildren(this.opening, this.contentDOM, this.closing);
+    }
     if (this.footnote || this.role === 'head') {
       this.opening.textContent = this.footnote ? '[^' : '[';
       this.closing.textContent = ']:';
@@ -436,6 +427,8 @@ class DefinitionFieldView implements NodeView {
   }
 
   ignoreMutation(mutation: ViewMutationRecord): boolean {
-    return mutation.type !== 'selection' && !this.contentDOM.contains(mutation.target);
+    if (mutation.type === 'selection') return false;
+    if (mutation.type === 'childList' && mutation.target === this.dom) return false;
+    return !this.contentDOM.contains(mutation.target);
   }
 }

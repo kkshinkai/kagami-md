@@ -277,9 +277,10 @@ const splitTitle: PMCommand = (state, dispatch) => {
   if ($from.parent.type !== schema.nodes.calloutTitle) return false;
   if (!dispatch) return true;
   const tr = state.tr;
-  if (!$from.sameParent($to)) remove(tr, $from.pos, $to.pos);
-  const start = tr.selection.$from;
-  const end = tr.selection.$to;
+  const removed = !$from.sameParent($to) ? remove(tr, $from.pos, $to.pos) : null;
+  const seam = removed !== null ? tr.doc.resolve(removed) : null;
+  const start = seam ?? tr.selection.$from;
+  const end = seam ?? tr.selection.$to;
   if (start.parent.type !== schema.nodes.calloutTitle || !start.sameParent(end)) return false;
   const pos = start.before(start.depth - 1);
   const node = start.node(-1);

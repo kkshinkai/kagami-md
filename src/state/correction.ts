@@ -10,7 +10,7 @@ import { Plugin, PluginKey, type EditorState, type Transaction } from 'prosemirr
 import { Mapping } from 'prosemirror-transform';
 import type { BindingSet, BindingLabels } from '../parse/bindings.js';
 import { BindingState } from './bindings.js';
-import { readField, fieldSource, fieldOptions, hasPending, lazyField } from '../parse/field.js';
+import { readField, fieldSource, fieldOptions, hasPending, lazyField, splitDestinationSpace } from '../parse/field.js';
 import type { Parser } from '../syntax/index.js';
 import { changedRanges, transactionChangedRanges, transactionMapping, type Change } from './changes.js';
 import { getParser } from './parser.js';
@@ -179,6 +179,7 @@ export function settlesPhrasing(position: ResolvedPos, state: EditorState): bool
   const node = position.parent;
   const types = node.type.schema.nodes;
   if (node.type === types.linkLabel || node.type === types.footnoteLabel) return !fieldSource(node);
+  if (node.type === types.linkDestination) return splitDestinationSpace(node).trailing.length > 0;
   if (node.type !== types.paragraph) return false;
   return hasPending(node) || BindingState.get(state).blockReading(position.before());
 }
@@ -201,7 +202,7 @@ function samePhrasing(before: ResolvedPos, after: ResolvedPos): boolean {
   const previous = fieldOptions(before.parent, before.depth > 1 ? before.node(-1) : null, before.index(-1));
   const current = fieldOptions(after.parent, after.depth > 1 ? after.node(-1) : null, after.index(-1));
   return previous.phrasing === current.phrasing && previous.firstInListItem === current.firstInListItem &&
-    previous.firstInBlockQuote === current.firstInBlockQuote;
+    previous.firstInBlockQuote === current.firstInBlockQuote && previous.canOpenTitle === current.canOpenTitle;
 }
 
 /** Read the completed fields from either phase of correction. */

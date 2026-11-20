@@ -41,10 +41,26 @@ export function fieldOptions(node: Node, parent: Node | null, index: number): Pa
   if (node.type === types.tableParagraph) return { phrasing: 'tableCell' };
   if (node.type === types.calloutTitle) return { phrasing: 'calloutTitle' };
   if (node.type === types.linkLabel) return { phrasing: 'linkLabel' };
-  if (node.type === types.linkDestination) return { phrasing: 'linkDestination' };
+  if (node.type === types.linkDestination) return {
+    phrasing: 'linkDestination',
+    canOpenTitle: !node.attrs.spelling?.inAngleBrackets && parent?.childCount === 2,
+  };
   if (node.type === types.linkTitle) return { phrasing: 'linkTitle' };
   if (node.type === types.footnoteLabel) return { phrasing: 'footnoteLabel' };
   throw new RangeError(`Not a phrasing: ${node.type.name}`);
+}
+
+/** Split a bare link destination into its destination body and any active trailing spaces or tabs. */
+export function splitDestinationSpace(node: Node): { body: string; trailing: string } {
+  const text = fieldSource(node);
+  if (node.type !== node.type.schema.nodes.linkDestination || node.attrs.spelling?.inAngleBrackets) {
+    return { body: text, trailing: '' };
+  }
+  const body = text.replace(/[ \t]+$/, '');
+  if (body.length > 0 && body.length < text.length) {
+    return { body, trailing: text.slice(body.length) };
+  }
+  return { body: text, trailing: '' };
 }
 
 /** Pending marks distinguish authored block syntax from imported lazy lines. */

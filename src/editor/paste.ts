@@ -121,19 +121,19 @@ function closeRange(fragment: Fragment, side: -1 | 1, from: number, to: number, 
 
 function insertInline(transaction: Transaction, slice: Slice): void {
   const selection = transaction.selection;
-  if (selection instanceof TextSelection && !selection.$from.sameParent(selection.$to)) {
-    replaceSelection(transaction, slice);
-  } else {
-    if (!(selection instanceof TextSelection)) remove(transaction, selection.from, selection.to);
-    transaction.insertText(slice.content.textBetween(0, slice.content.size, '', '\n'));
+  if (!selection.empty) {
+    const pos = remove(transaction, selection.from, selection.to);
+    if (selection instanceof TextSelection) {
+      const seam = Selection.near(transaction.doc.resolve(pos));
+      transaction.setSelection(seam);
+    }
   }
+  transaction.insertText(slice.content.textBetween(0, slice.content.size, '', '\n'));
 }
 
 function replaceSelection(transaction: Transaction, slice: Slice): void {
-  const end = transaction.selection.to;
-  const step = transaction.steps.length;
-  replace(transaction, transaction.selection.from, end, slice);
-  transaction.setSelection(Selection.near(transaction.doc.resolve(transaction.mapping.slice(step).map(end, 1)), -1));
+  const after = replace(transaction, transaction.selection.from, transaction.selection.to, slice);
+  transaction.setSelection(Selection.near(transaction.doc.resolve(after), -1));
 }
 
 function insertBlocks(transaction: Transaction, content: Fragment): void {

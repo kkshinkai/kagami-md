@@ -942,7 +942,9 @@
 
 .markdown-editor .ProseMirror .md-link-definition {
   margin: var(--editor-block-margin) 0;
-  padding: calc(8px - var(--editor-block-margin)) var(--editor-block-padding-inline, 4px);
+  padding:
+    calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin))
+    var(--editor-block-padding-inline, 4px);
   display: block;
   color: var(--editor-text-color);
   font-size: inherit;
@@ -995,7 +997,8 @@
 
 .markdown-editor .ProseMirror .md-link-definition-head-content:has(> br.ProseMirror-trailingBreak:only-child),
 .markdown-editor .ProseMirror .md-link-definition-destination-content:has(> br.ProseMirror-trailingBreak:only-child),
-.markdown-editor .ProseMirror .md-link-definition-title-content:has(> br.ProseMirror-trailingBreak:only-child) {
+.markdown-editor .ProseMirror .md-link-definition-title-content:has(> br.ProseMirror-trailingBreak:only-child),
+.markdown-editor .ProseMirror .md-footnote-definition-identifier:has(> br.ProseMirror-trailingBreak:only-child) {
   display: inline-block;
 }
 
@@ -1010,17 +1013,8 @@
 }
 
 .markdown-editor .ProseMirror .md-link-definition-head-suffix {
-  display: inline-flex;
-  align-items: baseline;
+  display: inline;
   margin-left: 0.06em;
-}
-
-.markdown-editor .ProseMirror .md-link-definition-head-close {
-  margin-right: 0.06em;
-}
-
-.markdown-editor .ProseMirror .md-link-definition-head-colon {
-  margin-right: 0.18em;
 }
 
 .markdown-editor .ProseMirror .md-link-definition-destination-content {
@@ -1036,14 +1030,9 @@
 }
 
 .markdown-editor .ProseMirror .md-link-definition-title-open {
-  display: inline-flex;
-  align-items: baseline;
+  display: inline;
   margin-left: 0.12em;
   margin-right: 0.04em;
-}
-
-.markdown-editor .ProseMirror .md-link-definition-title-gap {
-  min-width: 0.44em;
 }
 
 .markdown-editor .ProseMirror .md-link-definition-title-close {
@@ -1052,14 +1041,14 @@
 
 .markdown-editor .ProseMirror .md-footnote-definition {
   margin: var(--editor-block-margin) 0;
-  padding-block: calc(8px - var(--editor-block-margin));
+  padding-block: 0;
   padding-inline: var(--editor-block-padding-inline, 4px) 0;
   color: var(--editor-text-color);
   font-size: inherit;
   display: grid;
   grid-template-columns: fit-content(40%) minmax(0, 1fr);
-  align-items: start;
-  gap: 4px;
+  align-items: first baseline;
+  gap: 0;
 }
 
 .markdown-editor .ProseMirror .md-footnote-definition > .md-footnote-definition-head {
@@ -1069,23 +1058,24 @@
 
 .markdown-editor .ProseMirror .md-footnote-definition > :not(.md-footnote-definition-head) {
   grid-column: 2;
+  min-width: 0;
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition > .md-footnote-definition-head + * {
+  margin-top: var(--editor-heading-space-before, 0px);
+}
+
+.markdown-editor .ProseMirror .md-footnote-definition > :last-child {
+  margin-bottom: 0;
 }
 
 .markdown-editor .ProseMirror .md-footnote-definition-head {
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
-  display: inline-flex;
-  align-items: baseline;
+  display: block;
   min-width: 0;
-  padding-top: calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin));
-}
-
-.markdown-editor .ProseMirror .md-footnote-definition-body {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
+  padding-block: calc(var(--editor-paragraph-padding-block, 8px) - var(--editor-block-margin));
 }
 
 .markdown-editor .ProseMirror .md-footnote-definition .md-footnote-definition,
@@ -1093,19 +1083,9 @@
   font-size: inherit;
 }
 
-.markdown-editor .ProseMirror .md-footnote-definition-body > :first-child {
-  margin-top: var(--editor-heading-space-before, 0px);
-}
-
-.markdown-editor .ProseMirror .md-footnote-definition-body > :last-child {
-  margin-bottom: 0;
-}
-
 .markdown-editor .ProseMirror .md-footnote-definition-prefix,
-.markdown-editor .ProseMirror .md-footnote-definition-suffix,
-.markdown-editor .ProseMirror .md-footnote-definition-separator {
+.markdown-editor .ProseMirror .md-footnote-definition-suffix {
   color: var(--editor-subtle-color);
-  flex-shrink: 0;
 }
 
 .markdown-editor .ProseMirror .md-footnote-definition-prefix {
@@ -1113,20 +1093,12 @@
 }
 
 .markdown-editor .ProseMirror .md-footnote-definition-suffix {
-  display: inline-flex;
-  align-items: baseline;
+  display: inline;
   margin-left: 0.06em;
 }
 
-.markdown-editor .ProseMirror .md-footnote-definition-close {
-  margin-right: 0.06em;
-}
-
-.markdown-editor .ProseMirror .md-footnote-definition-colon {
-  margin-right: 0.06em;
-}
-
 .markdown-editor .ProseMirror .md-footnote-definition-identifier {
+  display: inline;
   color: var(--editor-link-color);
   min-width: 0.5ch;
   font-weight: 600;

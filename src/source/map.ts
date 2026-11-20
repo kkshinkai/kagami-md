@@ -44,7 +44,7 @@ export class SourceMap {
     // The body's end can also end a field, before its final physical line ending or gap.
     if (before?.part === 'body' && before.inner === before.text.length - 1) {
       previous = this.read(before.address);
-      const at = previous.inText(before.text.length);
+      const at = previous.inText(previous.toProbe(before.text.length));
       if (at !== null) return at as EditorLoc;
     }
     if (found.part === 'start' || found.part === 'leading')
@@ -52,7 +52,8 @@ export class SourceMap {
     if (found.part === 'end') return caret(found.address.block.node, found.address.editor, true) as EditorLoc;
     if (found.part === 'trailing') return this.after(found.address) as EditorLoc;
     const unit = previous && before!.address.block === found.address.block ? previous : this.read(found.address);
-    return (unit.inText(found.inner) ?? ownerPlace(unit, unit.reading, unit.node, unit.editor, found.inner, unit.places) ??
+    const point = unit.toProbe(found.inner);
+    return (unit.inText(point) ?? ownerPlace(unit, unit.reading, unit.node, unit.editor, point, unit.places) ??
       this.after(found.address)) as EditorLoc;
   }
 
@@ -81,14 +82,15 @@ export class SourceMap {
     }
     if (current.isTextblock) {
       const offset = Math.max(0, resolved.parentOffset - unit.trimmed(reading, current));
-      return (unit.source + fromField(reading.pieces ?? [], offset, reading.range.start)) as SourceLoc;
+      const raw = unit.fromProbe(fromField(unit.fieldPieces(reading, current), offset, reading.range.start));
+      return (unit.source + Math.min(unit.text.length, raw)) as SourceLoc;
     }
     const parts = unit.children(reading, current);
     const index = resolved.index(resolved.depth);
     let point = reading.range.start;
     if (index < parts.length) point = parts[index]!.range.start;
     else if (parts.length) point = parts.at(-1)!.range.end;
-    return (unit.source + point) as SourceLoc;
+    return (unit.source + unit.fromProbe(point)) as SourceLoc;
   }
 
   private atEditor(position: number): Address {
@@ -135,24 +137,31 @@ export class SourceMap {
 
   private read(address: Address): Unit {
     const block = address.block;
+    const node = block.node;
+    const types = node.type.schema.nodes;
     // The final physical ending is boundary text, but a literal body can end in a content
     // newline. Supply its actual terminator so reading does not consume that content newline.
     const text = block.body + (block.trailing.length ? '\n' : '');
+    const emptyLabels = emptyLabelIndices(node, text, address.item, this.parser);
+    let probe = text;
+    for (let index = emptyLabels.length - 1; index >= 0; index--) {
+      const at = emptyLabels[index]!;
+      probe = probe.slice(0, at) + 'x' + probe.slice(at);
+    }
     const source = address.source + block.leading.length;
     // The file's first unit reads with front matter. The mark keeps a first U+FEFF of the
     // body's text a character; parseFile excludes the supplied mark from its coordinates.
     const blocks = source === 0 ? []
-      : this.parser.parseBlocks(text);
+      : this.parser.parseBlocks(probe);
     const file = blocks.length ? null
-      : this.parser.parseFile('\ufeff' + text).document;
+      : this.parser.parseFile('\ufeff' + probe).document;
     const roots = file?.frontMatter ? [file.frontMatter] : file?.children ?? blocks;
     const items = address.item && roots.length === 1 ? children(roots[0]!) : roots;
-    const node = block.node;
-    if (file && !roots.length && !address.item && node.type === node.type.schema.nodes.paragraph && !block.body.length)
-      return new Unit(new Correspondence(file, file.start + file.leading), node, source, address.editor, this.options, text);
+    if (file && !roots.length && !address.item && node.type === types.paragraph && !block.body.length)
+      return new Unit(new Correspondence(file, file.start + file.leading), node, source, address.editor, this.options, text, []);
     if (roots.length !== 1 || items.length !== 1)
       throw new RangeError('A unit does not read alone as it does in the file');
-    return new Unit(new Correspondence(items[0]!), node, source, address.editor, this.options, text);
+    return new Unit(new Correspondence(items[0]!), node, source, address.editor, this.options, text, emptyLabels);
   }
 
   /** Boundary text points to the next caret in its owner, without reading a second unit. */
@@ -163,6 +172,62 @@ export class SourceMap {
       return caret(address.block.node, address.editor, true);
     const next = this.atEditor(end);
     return caret(next.block.node, next.editor, false);
+  }
+}
+
+interface EmptyLabelTarget {
+  readonly path: readonly number[];
+  readonly kind: 'link' | 'footnote';
+}
+
+/** Locate active empty definition labels in a top-level or nested writing unit. */
+function emptyLabelIndices(node: Node, text: string, item: boolean, parser: Parser): number[] {
+  const targets: EmptyLabelTarget[] = [];
+  collectEmptyLabelPaths(node, [], targets);
+  if (!targets.length) return [];
+  const parsed = targets.some(target => target.path.length > 0) ? parser.parseBlocks(text) : [];
+  const results: number[] = [];
+  let minOffset = 0;
+  for (const target of targets) {
+    let searchFrom = minOffset;
+    if (target.path.length > 0 && parsed.length > 0) {
+      let current = item && parsed.length === 1 ? children(parsed[0]!)[0] : parsed[0];
+      for (const step of target.path) {
+        if (!current) break;
+        current = children(current)[step];
+      }
+      if (current && current.start > searchFrom) searchFrom = current.start;
+    }
+    if (target.kind === 'footnote') {
+      const found = text.indexOf('[^]:', searchFrom);
+      if (found >= 0) {
+        results.push(found + 2);
+        minOffset = found + 4;
+      }
+    } else {
+      const found = text.indexOf('[]:', searchFrom);
+      if (found >= 0) {
+        results.push(found + 1);
+        minOffset = found + 3;
+      }
+    }
+  }
+  return results;
+}
+
+function collectEmptyLabelPaths(node: Node, path: number[], targets: EmptyLabelTarget[]): void {
+  const types = node.type.schema.nodes;
+  if ((node.type === types.linkReferenceDefinition || node.type === types.footnoteDefinition) &&
+      !fieldSource(node.firstChild!)) {
+    const kind = node.type === types.footnoteDefinition ? 'footnote' : 'link';
+    targets.push({ path: [...path], kind });
+    return;
+  }
+  if (node.isTextblock) return;
+  for (let index = 0; index < node.childCount; index++) {
+    path.push(index);
+    collectEmptyLabelPaths(node.child(index), path, targets);
+    path.pop();
   }
 }
 
@@ -188,9 +253,10 @@ class Unit {
   private readonly omitted = new WeakSet<Correspondence>();
 
   constructor(readonly reading: Correspondence, readonly node: Node, readonly source: number,
-    readonly editor: number, readonly options: unparse.Options, readonly text: string) {}
-  get start(): number { return this.source + this.reading.range.start; }
-  get end(): number { return this.source + this.reading.range.end; }
+    readonly editor: number, readonly options: unparse.Options, readonly text: string,
+    readonly emptyLabels: readonly number[]) {}
+  get start(): number { return this.source + this.fromProbe(this.reading.range.start); }
+  get end(): number { return this.source + this.fromProbe(this.reading.range.end); }
   get places(): readonly Place[] {
     return this.mapped ??= places(this, this.reading, this.node, this.editor);
   }
@@ -198,6 +264,29 @@ class Unit {
   get last(): number {
     const place = this.places.at(-1)!;
     return place.editor + place.length;
+  }
+  toProbe(inner: number): number {
+    let shift = 0;
+    for (const at of this.emptyLabels) {
+      if (inner > at) shift++;
+    }
+    return inner + shift;
+  }
+  fromProbe(point: number): number {
+    let shift = 0;
+    for (let index = 0; index < this.emptyLabels.length; index++) {
+      if (point > this.emptyLabels[index]! + index) shift++;
+    }
+    return point - shift;
+  }
+  fieldPieces(reading: Correspondence, node: Node): readonly SourcePiece[] {
+    const types = node.type.schema.nodes;
+    if (this.emptyLabels.length > 0 && (node.type === types.linkLabel || node.type === types.footnoteLabel) &&
+        !fieldSource(node)) {
+      const start = reading.pieces?.[0]?.start ?? this.emptyLabels[0]!;
+      return [{ start, end: start, length: 0 }];
+    }
+    return reading.pieces ?? [];
   }
   /** Only a rewritten field loses its prefix; a retained field still starts with its spaces. */
   trimmed(reading: Correspondence, node: Node): number {
@@ -223,7 +312,9 @@ class Unit {
     if (written.length === node.childCount) return reading.children(node);
     const result: Correspondence[] = [];
     let body = reading.suppliedBody();
-    for (let index = 0, kept = 0, next = 0; index < node.childCount; index++) {
+    let kept = 0;
+    let next = 0;
+    for (let index = 0; index < node.childCount; index++) {
       const isWritten = written[kept] === index;
       if (isWritten) kept++;
       const syntax = isWritten ? actual[next] : undefined;
@@ -261,13 +352,22 @@ class Unit {
 
 function places(unit: Unit, reading: Correspondence, node: Node, at: number, result: Place[] = []): Place[] {
   if (node.isTextblock) {
-    const pieces = reading.pieces ?? [];
+    const pieces = unit.fieldPieces(reading, node);
     const before = result.length;
     let offset = unit.trimmed(reading, node);
     for (const piece of pieces) {
       if (piece.length)
         result.push({ start: piece.start, end: piece.end, editor: at + 1 + offset, length: piece.length });
       offset += piece.length;
+    }
+    const last = pieces.at(-1);
+    const limit = unit.text.length + unit.emptyLabels.length;
+    if (last && last.end - last.start === last.length && offset < node.content.size) {
+      const extra = Math.min(node.content.size - offset, Math.max(0, limit - last.end));
+      if (extra) {
+        result.push({ start: last.end, end: last.end + extra, editor: at + 1 + offset, length: extra });
+        offset += extra;
+      }
     }
     const where = pieces[0]?.start ?? reading.range.start;
     if (result.length === before) result.push({ start: where, end: where, editor: at + 1 + offset, length: 0 });
@@ -305,7 +405,7 @@ function fromField(pieces: readonly SourcePiece[], offset: number, otherwise: nu
   for (let i = 0; i < pieces.length; i++) {
     const piece = pieces[i]!;
     if (offset < piece.length) return piece.end - piece.start === piece.length ? piece.start + offset : piece.start;
-    if (i === pieces.length - 1) return piece.end;
+    if (i === pieces.length - 1) return piece.end - piece.start === piece.length ? piece.start + offset : piece.end;
     offset -= piece.length;
   }
   return otherwise;

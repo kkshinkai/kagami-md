@@ -17,7 +17,7 @@ import {
   setAttributes
 } from './frames.js';
 import { realizeParagraph } from './realize.js';
-import { removeAcrossFields } from './remove.js';
+import { needsStructuredRemove, removeAcrossFields } from './remove.js';
 import { reshapeBlocks } from './reshape.js';
 
 export { carrier };
@@ -199,14 +199,21 @@ export function insert(tr: Transform, pos: number, type: NodeType, meaning: Attr
   tr.insert(pos, adoptContent(Fragment.from(node), at));
 }
 
-/** Remove the blocks between two positions. */
-export function remove(tr: Transform, from: number, to: number): void {
+/** Remove the blocks between two positions and return the mapped seam position. */
+export function remove(tr: Transform, from: number, to: number): number {
   const start = tr.steps.length;
   const left = tr.doc.resolve(from);
   const right = tr.doc.resolve(to);
-  if (left.parent.isTextblock && right.parent.isTextblock && !left.sameParent(right)) removeAcrossFields(tr, from, to);
-  else tr.deleteRange(from, to);
-  mergeAdjacent(tr, tr.mapping.slice(start).map(from, -1));
+  let explicitSeam: number | undefined;
+  if (left.parent.isTextblock && right.parent.isTextblock && !left.sameParent(right)) {
+    explicitSeam = removeAcrossFields(tr, from, to);
+  } else {
+    tr.deleteRange(from, to);
+  }
+  const mergeStart = tr.steps.length;
+  const seam = explicitSeam ?? tr.mapping.slice(start).map(from, -1);
+  mergeAdjacent(tr, seam);
+  return tr.mapping.slice(mergeStart).map(seam, -1);
 }
 
 /** Wrap a range of blocks in a new container with their outer boundaries. */
@@ -378,8 +385,19 @@ export function reshape(tr: Transform, from: number, to: number, shapes: readonl
  * spelling they were read with; the blocks split and joined at its edges are split and joined
  * as `split` and `join` do.
  */
-export function replace(tr: Transform, from: number, to: number, slice: Slice): void {
+export function replace(tr: Transform, from: number, to: number, slice: Slice): number {
+  if (needsStructuredRemove(tr.doc, from, to)) {
+    const pos = remove(tr, from, to);
+    if (!slice.size) return pos;
+    const replaceStart = tr.steps.length;
+    new ReplaceContext(tr, pos, pos).apply(slice);
+    const first = tr.steps[replaceStart];
+    const anchor = first instanceof ReplaceStep && first.to > pos ? first.to : pos;
+    return tr.mapping.slice(replaceStart).map(anchor, 1);
+  }
+  const replaceStart = tr.steps.length;
   new ReplaceContext(tr, from, to).apply(slice);
+  return tr.mapping.slice(replaceStart).map(to, 1);
 }
 
 /** The original edges and the native fitting map of one replacement. */
