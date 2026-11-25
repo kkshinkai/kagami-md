@@ -5,7 +5,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import type { RetainedBlock, RetainedList } from '../source/index.js';
+import { RetainedList, type RetainedBlock } from '../source/index.js';
 import { fieldSource, frontMatterSource, splitDestinationSpace } from '../parse/field.js';
 import { Fragment, type Node, type ResolvedPos, type Slice } from 'prosemirror-model';
 import { fitsIndentedCode, fitsOnMarkerLine, htmlBlockEnds, isLinkDestination, isLinkTitle, longestClosingFence,
@@ -72,7 +72,7 @@ export function unitSeparator(left: RetainedBlock | RetainedList, right: Retaine
   const loose = list?.attrs.spelling?.tight === false;
   let parent: BoundaryParent | null = null;
   if (list) parent = { sameList: true, loose };
-  else if ('items' in right) {
+  else if (right instanceof RetainedList) {
     const marker = itemMarker(right.node, right.node.firstChild!, 0, listPattern(right.node, left.closing.openList));
     parent = { sameList: false, loose: true, marker };
   }
@@ -110,6 +110,8 @@ export function unparseSlice(slice: Slice, from: ResolvedPos, options: unparse.O
   if (from.parent.type === schema.nodes.yamlSequence &&
       content.content.every(node => node.type.isInGroup('yamlNode')))
     content = Fragment.from(from.parent.type.create(null, content));
+  if (content.childCount > 1 && content.content.every(node => node.type === schema.nodes.yamlPair))
+    content = Fragment.from(schema.nodes.yamlMapping.create(null, content));
   const firstType = content.firstChild?.type;
   if (firstType === schema.nodes.linkLabel || firstType === schema.nodes.linkDestination ||
       firstType === schema.nodes.linkTitle || firstType === schema.nodes.footnoteLabel) {

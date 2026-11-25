@@ -59,6 +59,7 @@ export const icons = {
   remove: '<path d="M10 11v6" /><path d="M14 11v6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />',
   above: '<path d="m5 12 7-7 7 7" /><path d="M12 19V5" />',
   below: '<path d="M12 5v14" /><path d="m19 12-7 7-7-7" />',
+  inlineFlow: '<rect width="8" height="8" x="3" y="8" rx="2" /><rect width="8" height="8" x="13" y="8" rx="2" />',
   quote: valueTypeIcons.literal,
   tag: valueTypeIcons.number,
   page: '<path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z" /><path d="M14 2v5a1 1 0 0 0 1 1h5" /><path d="M10 9H8" /><path d="M16 13H8" /><path d="M16 17H8" />',

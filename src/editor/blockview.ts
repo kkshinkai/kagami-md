@@ -7,7 +7,7 @@
 
 import type { DOMNode } from './dom.js';
 import { schema } from '../types/schema.js';
-import { DOMSerializer, type Node, type Schema } from 'prosemirror-model';
+import { DOMSerializer, type Node } from 'prosemirror-model';
 import { Plugin } from 'prosemirror-state';
 import type { EditorView, NodeView, NodeViewConstructor } from 'prosemirror-view';
 import type { SelectableBlock } from '../state/selection.js';
@@ -19,9 +19,10 @@ export interface BlockView extends NodeView {
   readonly field?: HTMLElement;
   readonly handle?: HandleTarget;
   readonly sequence?: ChildSequence;
-  readonly selectionTarget?: HTMLElement;
+  readonly selectionTarget?: HTMLElement | null;
   readonly markerLane?: HTMLElement;
   readonly brush?: boolean;
+  nodePosition?(): number | undefined;
 }
 
 export interface HandleTarget {
@@ -46,6 +47,13 @@ export function registerNodeView<T extends BlockView>(view: T): T {
   (view.dom as ViewDOM).kagamiView = view;
   if (view.sequence) (view.sequence.content as ViewDOM).kagamiView = view;
   return view;
+}
+
+/** Synchronize `content`'s child-sequence owner link, clearing it when a collection switches into flow mode. */
+export function syncNodeViewSequence(view: BlockView, content: HTMLElement): void {
+  const viewDOM = content as ViewDOM;
+  if (view.sequence) viewDOM.kagamiView = view;
+  else if (viewDOM.kagamiView === view) delete viewDOM.kagamiView;
 }
 
 /** Block frames advertise their measurable box before ProseMirror mounts their children. */
@@ -92,11 +100,11 @@ function simpleView(node: Node, document: Document): BlockView {
 
 /** Owned frames for every block. Installed after the plugins with views of their own: the view
  * a plugin earlier in the list gives a node is the one ProseMirror uses. */
-export function blockView(documentSchema: Schema): Plugin {
+export function blockView(documentSchema: typeof schema = schema): Plugin {
   const nodeViews: Record<string, NodeViewConstructor> = {};
   for (const type of Object.values(documentSchema.nodes)) {
     if (type.isInGroup('list')) continue;
-    if (type !== documentSchema.nodes.listItem && type !== documentSchema.nodes.frontmatterSource &&
+    if (type !== documentSchema.nodes.listItem && type !== documentSchema.nodes.rawFrontMatter &&
         !type.isInGroup('block'))
       continue;
     nodeViews[type.name] = (node, view) => registerBlockView(node, simpleView(node, view.dom.ownerDocument));

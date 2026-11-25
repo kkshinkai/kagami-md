@@ -93,8 +93,14 @@ export function measureDropIntents(
   const roots = selectableBlocks(view.state.doc).filter((block) => !block.parent);
   const rootSequences = rootBlockSequences(view.state.doc);
   return intents.flatMap((intent) => {
-    const parent = intent.parent ? byPosition.get(intent.parent.from)! : null;
+    const parent = intent.parent ? byPosition.get(intent.parent.from) ?? null : null;
     if (intent.parent && !parent) return []; // Hidden subtrees have no painted targets.
+    if (parent) {
+      const parentDom = view.nodeDOM(parent.from) as HTMLElement | null;
+      const content = parentDom && nodeView(parentDom)?.content;
+      const inner = content && content !== parentDom ? nodeView(content) : undefined;
+      if (inner && !inner.sequence) return [];
+    }
     const children = parent ? parent.children : roots;
     // A transparent root mapping ends before the Markdown body begins. Do not average a
     // property's trailing edge with an unrelated body block (or use its horizontal column).
@@ -193,8 +199,9 @@ class DropHit {
     if (!initial) return;
     let block: RenderedBlock = initial;
     // A header retains its upper half; a side label does not block entry to the child column.
-    while (block.children.length && y >= block.rect.top && y <= block.rect.bottom) {
-      const children: RenderedBlock[] = block.children.map((child) => lookup.get(child.from)!);
+    while (y >= block.rect.top && y <= block.rect.bottom) {
+      const children = this.renderedChildren(block);
+      if (!children.length) break;
       const next: RenderedBlock = children.find((child) => child.rect.bottom >= y) ?? children.at(-1)!;
       const { header, end, trailing } = bodyGeometry(view, block);
       if (x < next.rect.left || (header && y < (header.top + header.bottom) / 2) || (trailing && y >= end))
@@ -202,6 +209,13 @@ class DropHit {
       block = next;
     }
     return block;
+  }
+
+  private renderedChildren(block: RenderedBlock): RenderedBlock[] {
+    return block.children.flatMap((child) => {
+      const rendered = this.lookup.get(child.from);
+      return rendered ? [rendered] : [];
+    });
   }
 
   targetAt(parent: RenderedBlock | null, index: number, boundary?: number) {
@@ -218,17 +232,17 @@ class DropHit {
     return block.parent ? block.parent.children : this.roots;
   }
   afterTail(block: RenderedBlock): RenderedIntent | undefined {
-    const children = block.children.map((child) => this.lookup.get(child.from)!);
+    const children = this.renderedChildren(block);
     const { rect, trailing } = bodyGeometry(this.view, block);
     // A trailing row closes this sequence. Crossing its footer cannot re-enter a descendant's
     // footer merely because the pointer is far to the right.
-    if (trailing && this.x >= rect.left) return this.targetAt(block, children.length);
+    if (trailing && this.x >= rect.left) return this.targetAt(block, block.children.length);
     const last = children.at(-1);
     if (last && this.x >= last.rect.left) {
       const deeper = this.afterTail(last);
       if (deeper) return deeper;
     }
-    const parent = block.parent ? this.lookup.get(block.parent.from)! : null;
+    const parent = block.parent ? this.lookup.get(block.parent.from) ?? null : null;
     return this.targetAt(
       parent,
       this.siblingBlocks(block).findIndex((sibling) => sibling.from === block.from) + 1,
@@ -256,10 +270,10 @@ class DropHit {
     }
     let block = this.blockAtPoint();
     while (block) {
-      const children = block.children.map((child) => this.lookup.get(child.from)!);
+      const children = this.renderedChildren(block);
       const { rect: body, header, end, trailing } = bodyGeometry(this.view, block);
       if (trailing && this.y >= end && this.y <= block.rect.bottom && this.x >= body.left) {
-        const append = this.targetAt(block, children.length);
+        const append = this.targetAt(block, block.children.length);
         if (append) return append;
       }
       const entryTop = header ? (header.top + header.bottom) / 2 : body.top;
@@ -269,7 +283,7 @@ class DropHit {
       }
       const siblings = this.siblingBlocks(block);
       const index = siblings.findIndex((sibling) => sibling.from === block!.from);
-      const parent = block.parent ? this.lookup.get(block.parent.from)! : null;
+      const parent = block.parent ? this.lookup.get(block.parent.from) ?? null : null;
       if (this.y > (block.rect.top + block.rect.bottom) / 2) {
         const after = this.targetAt(parent, index + 1, block.to);
         if (after) return after;

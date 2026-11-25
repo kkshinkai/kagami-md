@@ -14,6 +14,7 @@ export {
   parseFrontmatterOpening,
   type FrontmatterMatch,
 } from './constructs/flow/frontmatter.js';
+export { readYAML } from './compile/frontmatter.js';
 // ZWSP edge mark: Expose the syntax and the reader's predicate to the unparser.
 export { edgeMarkCode } from './constructs/text/edge-mark.js';
 export { needsEdgeMark, type EdgeMarkKind, type EdgeMarkPlace } from './syntax/edge-mark.js';

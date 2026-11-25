@@ -185,8 +185,8 @@
 
 .kagami-table-drag-handle:focus-visible,
 .kagami-table-add:focus-visible {
-  outline: 2px solid var(--editor-selection-border);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--editor-focus-color) 28%, transparent);
 }
 
 .kagami-table-drag-active .kagami-table-drag-handle {

@@ -5,7 +5,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import type { Node } from 'prosemirror-model';
 import { Plugin, TextSelection, type Selection } from 'prosemirror-state';
 import type { EditorView } from 'prosemirror-view';
 import { compositionState } from '../state/input.js';
@@ -25,11 +24,6 @@ export function selection(): Plugin {
       attributes: (state): Record<string, string> =>
         normalizationKey.getState(state)?.modelOwned ? { 'data-pointer-selection': 'model' } : {},
       handleDOMEvents: {
-        keydown: () => pointer.clearClicks(),
-        beforeinput: () => pointer.clearClicks(),
-        copy: () => pointer.clearClicks(),
-        cut: () => pointer.clearClicks(),
-        paste: () => pointer.clearClicks(),
         pointerdown: (_view, event) => pointer.down(event),
         mousedown: (_view, event) => pointer.mouseDown(event),
         pointermove: (_view, event) => pointer.move(event),
@@ -73,13 +67,6 @@ export function finishPointerSelection(view: EditorView, normalize: boolean): vo
   view.dispatch(tr);
 }
 
-interface CompletedClick {
-  readonly count: number;
-  readonly presentationId: number;
-  readonly doc: Node;
-  readonly origin: Selection | null;
-}
-
 interface NativeDrag {
   readonly source: EventTarget;
   readonly end: () => void;
@@ -94,17 +81,13 @@ interface PointerSession {
   nativeDrag: NativeDrag | null;
   readonly startX: number;
   readonly startY: number;
-  clickCount: number;
   presentationId: number;
-  readonly startDoc: Node;
-  readonly previousClick: CompletedClick | undefined;
 }
 
 /** One view owns its pointer sessions, native listeners and delayed touch release. */
 class PointerSelection {
   view!: EditorView;
   session: PointerSession | undefined;
-  completed: CompletedClick | undefined;
   presentationId = 0;
   pendingRelease: number | undefined;
 
@@ -147,7 +130,6 @@ class PointerSelection {
     this.cancelRelease();
     this.clearNativeDrag();
     this.session = undefined;
-    this.completed = undefined;
     const win = this.window;
     win.removeEventListener('mousedown', this.observeMouseDown);
     win.removeEventListener('pointerup', this.releaseEvent);
@@ -157,11 +139,6 @@ class PointerSelection {
     win.removeEventListener('drop', this.dragEnd);
     win.removeEventListener('dragend', this.dragEnd);
     win.removeEventListener('blur', this.windowBlur);
-  }
-
-  clearClicks(): false {
-    this.completed = undefined;
-    return false;
   }
 
   begin(event: MouseEvent, pointer: PointerEvent | null): PointerSession {
@@ -177,10 +154,7 @@ class PointerSelection {
       nativeDrag: null,
       startX: event.clientX,
       startY: event.clientY,
-      clickCount: 0,
       presentationId: this.presentationId,
-      startDoc: this.view.state.doc,
-      previousClick: this.completed,
     };
     this.session = session;
     this.change({ isPointerActive: true, presentationId: session.presentationId, modelOwned: false });
@@ -196,17 +170,7 @@ class PointerSelection {
     if (event.button !== 0) return false;
     // Freeze before PM and rendered-source handlers, including a mouse stream
     // whose initial pointerdown was omitted by native drag takeover.
-    const session = this.session ?? this.begin(event, null);
-    session.clickCount = event.detail;
-    const previous = session.previousClick;
-    // Native detail, not a local timer/distance heuristic, identifies one click series.
-    // Its later press must hit-test the same painted text as its first press. Restore that
-    // presentation before PM and the browser's mousedown default select a word/paragraph.
-    // Keyboard input, content changes, native DnD and owned controls end this eligibility.
-    if (previous && event.detail > 1 && previous.count === event.detail - 1 && previous.doc === this.view.state.doc) {
-      session.presentationId = previous.presentationId;
-      this.change({ presentationId: previous.presentationId, gestureSelection: previous.origin });
-    }
+    if (!this.session) this.begin(event, null);
     return false;
   }
 
@@ -235,7 +199,6 @@ class PointerSelection {
   }
 
   blur(): false {
-    this.completed = undefined;
     this.release(false);
     return false;
   }
@@ -340,7 +303,6 @@ class PointerSelection {
   }
 
   release(normalize: boolean): void {
-    const session = this.session;
     this.clearNativeDrag();
     this.session = undefined;
     const view = this.view;
@@ -352,12 +314,6 @@ class PointerSelection {
     const shouldNormalize = normalize && selected instanceof TextSelection && !selected.empty;
     if (!pointer?.isPointerActive && !pointer?.isPointerSelecting && !shouldNormalize) return;
     finishPointerSelection(view, shouldNormalize);
-    // A small move can extend a native word selection without ending the browser's click
-    // count. dragStarted tracks selection activity, so it cannot veto a later native detail.
-    // HTML DnD and model-owned gestures release with normalize=false instead.
-    this.completed = normalize && session && session.clickCount > 0 && session.startDoc === view.state.doc
-      ? { count: session.clickCount, presentationId: session.presentationId, doc: view.state.doc,
-        origin: pointer?.gestureSelection ?? null } : undefined;
   }
 
   change(change: NormalizationChange): void {

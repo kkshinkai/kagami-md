@@ -9,18 +9,26 @@
  * Derived from prosemirror-view, https://github.com/ProseMirror/prosemirror-view. */
 
 import { Fragment, NodeRange, Slice, type Node, type NodeType, type ResolvedPos } from 'prosemirror-model';
-import { Selection, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
+import { NodeSelection, Selection, TextSelection, type EditorState, type Transaction } from 'prosemirror-state';
+import { BlockSelection } from '../state/selection.js';
+import { Source } from '../source/index.js';
+import { getParser } from '../state/parser.js';
 import {
   hasClipboardSlice, isInsideCarriedField, readCarriedTree,
 } from '../types/annotations.js';
 import { alignment, type Alignment } from '../types/schema.js';
 import { defaultUnparseOptions, unparseSlice } from '../unparse/unparse.js';
+import {
+  adaptToYAMLTarget, classifyYAMLSlice, isYAMLCodeBlock, peelOpenWrapperSlice, yamlSliceToBody,
+  type YAMLAdaptOptions, type YAMLSlice, type YAMLTarget,
+} from '../unparse/yamltransfer.js';
 import { fieldSource } from '../parse/field.js';
 import { insert, join, remove, replace, split, update, wrap } from '../transform/transform.js';
 import { isolateHistory } from '../state/history.js';
 
 /** Insert a clipboard slice, preserving the destination's structural ownership. */
-export function paste(state: EditorState, content: Slice, html = ''): Transaction | null {
+export function paste(state: EditorState, content: Slice, html = '', plainText?: string): Transaction | null {
+  if (isSelectionInYAMLFrontMatter(state)) return pasteIntoYAML(state, content, plainText);
   const { slice, itemHead } = new PasteContext(state).read(content, html);
   if (!slice.size) return null;
   const transaction = isolateHistory(state.tr);
@@ -28,9 +36,202 @@ export function paste(state: EditorState, content: Slice, html = ''): Transactio
   else if (slice.content.content.every(node => node.isInline)) insertInline(transaction, slice);
   else if (slice.openStart || slice.openEnd) replaceSelection(transaction, slice);
   else insertBlocks(transaction, slice.content);
-  return transaction.setMeta('paste', true).setMeta('uiEvent', 'paste').scrollIntoView();
+  return finishPaste(transaction);
 }
 
+/** Whether `state.selection` falls wholly inside the leading `yamlFrontMatter` subtree. */
+function isSelectionInYAMLFrontMatter(state: EditorState): boolean {
+  const first = state.doc.firstChild;
+  return (
+    first?.type === state.schema.nodes.yamlFrontMatter &&
+    state.selection.from > 0 &&
+    state.selection.to <= first.nodeSize
+  );
+}
+
+/** Mark a paste transaction with ProseMirror paste metadata and scroll the caret into view. */
+function finishPaste(tr: Transaction): Transaction {
+  return tr.setMeta('paste', true).setMeta('uiEvent', 'paste').scrollIntoView();
+}
+
+/** Classify a pasted slice for YAML containers and close open edges after peeling outer wrappers. */
+function closedYAMLSlice(content: Slice): { readonly classified: YAMLSlice; readonly closed: Slice } {
+  const classified = classifyYAMLSlice(content);
+  const closed = classified.kind === 'entries'
+    ? new Slice(classified.entries, 0, 0)
+    : closeSlice(peelOpenWrapperSlice(content), 0, 0);
+  return { classified, closed };
+}
+
+/** Build `adaptToYAMLTarget` options bound to the active parser and unparser around `state.selection.$from`. */
+function yamlPasteAdaptOptions(state: EditorState): YAMLAdaptOptions {
+  const options = Source.get(state).options;
+  const contextPos = state.selection.$from;
+  return {
+    parser: getParser(state),
+    blockText: sourceNode => unparseSlice(new Slice(Fragment.from(sourceNode), 0, 0), contextPos, options),
+  };
+}
+
+/** Handle clipboard pastes targeting a YAML front matter node across scalar, boolean, and block selections. */
+function pasteIntoYAML(state: EditorState, content: Slice, plainText?: string): Transaction | null {
+  const { selection } = state;
+  const { yamlScalar } = state.schema.nodes;
+  if (
+    selection instanceof TextSelection &&
+    selection.$from.sameParent(selection.$to) &&
+    selection.$from.parent.type === yamlScalar
+  ) {
+    return pasteIntoYAMLScalar(state, selection, content, plainText);
+  }
+  const { closed } = closedYAMLSlice(content);
+  if (closed.size === 0) return null;
+  const adaptOptions = yamlPasteAdaptOptions(state);
+  if (
+    selection instanceof NodeSelection &&
+    selection.node.type === yamlScalar &&
+    selection.node.attrs.tag === 'boolean'
+  ) {
+    return pasteIntoBooleanScalar(state, selection, closed.content.content, adaptOptions);
+  }
+  if (selection instanceof BlockSelection) {
+    return pasteIntoYAMLBlockSelection(state, selection, closed.content.content, adaptOptions);
+  }
+  return null;
+}
+
+/** Paste structured YAML into an empty placeholder scalar, or normalized plain text into any active YAML scalar. */
+function pasteIntoYAMLScalar(
+  state: EditorState,
+  selection: TextSelection,
+  content: Slice,
+  plainText?: string,
+): Transaction | null {
+  const placeholder = emptyYAMLPlaceholder(selection);
+  if (placeholder !== null) {
+    const { classified, closed } = closedYAMLSlice(content);
+    if (
+      classified.kind === 'entries' ||
+      (closed.size > 0 && closed.content.content.every(isYAMLCodeBlock))
+    ) {
+      if (placeholder.kind === 'value') {
+        const adapted = adaptToYAMLTarget(
+          closed.content.content,
+          'value',
+          state.schema,
+          yamlPasteAdaptOptions(state),
+        );
+        const valueNode = adapted.kind === 'value'
+          ? adapted.node
+          : (adapted.nodes.length > 0 ? state.schema.nodes.yamlMapping.create(null, adapted.nodes) : null);
+        if (!valueNode) return null;
+        const transaction = isolateHistory(state.tr);
+        replace(transaction, placeholder.from, placeholder.to, new Slice(Fragment.from(valueNode), 0, 0));
+        transaction.setSelection(Selection.near(transaction.doc.resolve(placeholder.from), 1));
+        return finishPaste(transaction);
+      }
+      const adapted = adaptToYAMLTarget(
+        closed.content.content,
+        placeholder.target,
+        state.schema,
+        yamlPasteAdaptOptions(state),
+      );
+      if (adapted.nodes.length === 0) return null;
+      const transaction = isolateHistory(state.tr);
+      BlockSelection.create(state.doc, placeholder.from, placeholder.to)
+        .replace(transaction, new Slice(Fragment.fromArray(adapted.nodes), 0, 0));
+      return finishPaste(transaction);
+    }
+  }
+  const raw = plainText
+    ? plainText.replace(/\r\n?/g, '\n')
+    : content.content.textBetween(0, content.content.size, '\n');
+  const text = raw.replace(/\u0000/g, '\uFFFD');
+  if (!text && selection.empty) return null;
+  return finishPaste(isolateHistory(state.tr).insertText(text));
+}
+
+/** Replace an atomic boolean YAML scalar with an adapted value or entry sequence, updating its owning slot. */
+function pasteIntoBooleanScalar(
+  state: EditorState,
+  selection: NodeSelection,
+  nodes: readonly Node[],
+  adaptOptions: YAMLAdaptOptions,
+): Transaction {
+  const { yamlMapping, yamlPair, yamlSequence } = state.schema.nodes;
+  const parent = selection.$from.parent;
+  const isPairKey = parent.type === yamlPair && selection.$from.index() === 0;
+  let target: YAMLTarget = 'mapping';
+  if (parent.type === yamlPair) target = 'value';
+  else if (parent.type === yamlSequence) target = 'sequence';
+  const adapted = adaptToYAMLTarget(nodes, target, state.schema, adaptOptions);
+  const transaction = isolateHistory(state.tr);
+  switch (adapted.kind) {
+    case 'value':
+      replace(transaction, selection.from, selection.to, new Slice(Fragment.from(adapted.node), 0, 0));
+      transaction.setSelection(Selection.near(transaction.doc.resolve(selection.from), 1));
+      break;
+    case 'entries': {
+      // Pasting onto a pair key (`false: KEEP`) keeps the unselected pair value intact instead of dropping the pair.
+      if (isPairKey) {
+        const keyNode = yamlMapping.create({ flow: true }, adapted.nodes);
+        replace(transaction, selection.from, selection.to, new Slice(Fragment.from(keyNode), 0, 0));
+        transaction.setSelection(Selection.near(transaction.doc.resolve(selection.from), 1));
+        break;
+      }
+      const range = parent.type === yamlPair
+        ? { from: selection.$from.before(), to: selection.$from.after() }
+        : { from: selection.from, to: selection.to };
+      BlockSelection.create(state.doc, range.from, range.to)
+        .replace(transaction, new Slice(Fragment.fromArray(adapted.nodes), 0, 0));
+      break;
+    }
+  }
+  return finishPaste(transaction);
+}
+
+/** Adapt clipboard blocks or YAML entries to replace a `BlockSelection` inside YAML front matter. */
+function pasteIntoYAMLBlockSelection(
+  state: EditorState,
+  selection: BlockSelection,
+  nodes: readonly Node[],
+  adaptOptions: YAMLAdaptOptions,
+): Transaction {
+  const target: YAMLTarget = selection.$from.parent.type === state.schema.nodes.yamlSequence
+    ? 'sequence'
+    : 'mapping';
+  const adapted = adaptToYAMLTarget(nodes, target, state.schema, adaptOptions);
+  const transaction = isolateHistory(state.tr);
+  selection.replace(transaction, new Slice(Fragment.fromArray(adapted.nodes), 0, 0));
+  return finishPaste(transaction);
+}
+
+type EmptyYAMLPlaceholder =
+  | { readonly kind: 'collection'; readonly from: number; readonly to: number; readonly target: 'mapping' | 'sequence' }
+  | { readonly kind: 'value'; readonly from: number; readonly to: number };
+
+/** Target replacement range when the caret sits inside an empty YAML pair, sequence scalar, or named pair value. */
+function emptyYAMLPlaceholder(selection: Selection): EmptyYAMLPlaceholder | null {
+  if (!(selection instanceof TextSelection) || !selection.empty) return null;
+  const { $from } = selection;
+  const { yamlPair, yamlScalar, yamlSequence } = $from.doc.type.schema.nodes;
+  if ($from.parent.type !== yamlScalar || $from.parent.content.size > 0 || $from.depth < 2) return null;
+  const owner = $from.node(-1);
+  if (owner.type === yamlPair &&
+      owner.child(0).content.size === 0 && owner.child(1).content.size === 0 &&
+      $from.depth >= 3) {
+    return { kind: 'collection', from: $from.before(-1), to: $from.after(-1), target: 'mapping' };
+  }
+  if (owner.type === yamlPair && $from.index(-1) === 1 && $from.depth >= 3) {
+    return { kind: 'value', from: $from.before(), to: $from.after() };
+  }
+  if (owner.type === yamlSequence) {
+    return { kind: 'collection', from: $from.before(), to: $from.after(), target: 'sequence' };
+  }
+  return null;
+}
+
+/** Decoded clipboard slice and whether insertion targets a list item's first line. */
 interface Insertion {
   readonly slice: Slice;
   readonly itemHead: boolean;
@@ -40,18 +241,24 @@ interface Insertion {
 class PasteContext {
   constructor(readonly state: EditorState) {}
 
+  /** Decode body clipboard data, honoring carried inline fields, table fragments, and item heads. */
   read(slice: Slice, html: string): Insertion {
-    if (!html || slice.content.firstChild?.isInline) return { slice, itemHead: false };
-    const dom = new globalThis.DOMParser().parseFromString(html, 'text/html').body;
-    const carried = readCarriedTree(dom, this.state.schema);
-    if (carried && isInsideCarriedField(carried.fragment, carried.carrier)) {
-      let field = slice.content.childCount === 1 ? slice.content.firstChild : null;
-      while (field && !field.isTextblock && field.childCount === 1) field = field.firstChild;
-      if (field?.isTextblock) return { slice: new Slice(field.content, 0, 0), itemHead: false };
+    const yaml = yamlSliceToBody(slice, this.state.selection.from === 0);
+    slice = yaml.slice;
+    if (yaml.converted && !slice.content.size) return { slice: Slice.empty, itemHead: false };
+    if ((!yaml.converted && !html) || slice.content.firstChild?.isInline) return { slice, itemHead: false };
+    const dom = html ? new globalThis.DOMParser().parseFromString(html, 'text/html').body : null;
+    if (dom) {
+      const carried = readCarriedTree(dom, this.state.schema);
+      if (carried && isInsideCarriedField(carried.fragment, carried.carrier)) {
+        let field = slice.content.childCount === 1 ? slice.content.firstChild : null;
+        while (field && !field.isTextblock && field.childCount === 1) field = field.firstChild;
+        if (field?.isTextblock) return { slice: new Slice(field.content, 0, 0), itemHead: false };
+      }
+      const matrix = this.matrix(slice.content, dom);
+      if (matrix) return matrix;
+      if (hasClipboardSlice(dom)) return { slice, itemHead: false };
     }
-    const matrix = this.matrix(slice.content, dom);
-    if (matrix) return matrix;
-    if (hasClipboardSlice(dom)) return { slice, itemHead: false };
     const selection = this.state.selection;
     const { paragraph, heading } = this.state.schema.nodes;
     if (selection instanceof TextSelection && selection.$from.sameParent(selection.$to) &&
@@ -69,6 +276,7 @@ class PasteContext {
     };
   }
 
+  /** Reconstruct a table node and column alignments when pasted content holds only table rows or cells. */
   matrix(content: Fragment, dom: HTMLElement): Insertion | null {
     if (!content.childCount) return null;
     const rows = content.content.every(node => node.type.spec.tableRole === 'row');
@@ -98,7 +306,7 @@ class PasteContext {
  * Close a slice's sides to the given depths, filling each node that was open there with the
  * content its type requires, as prosemirror-view closes a pasted slice (its `closeSlice`).
  */
-function closeSlice(slice: Slice, openStart: number, openEnd: number): Slice {
+export function closeSlice(slice: Slice, openStart: number, openEnd: number): Slice {
   if (openStart < slice.openStart)
     slice = new Slice(closeRange(slice.content, -1, openStart, slice.openStart, 0, slice.openEnd), openStart,
       slice.openEnd);
@@ -107,6 +315,7 @@ function closeSlice(slice: Slice, openStart: number, openEnd: number): Slice {
   return slice;
 }
 
+/** Recursively fill required children on one side of a fragment from outer depth `to` down to `from`. */
 function closeRange(fragment: Fragment, side: -1 | 1, from: number, to: number, depth: number,
   openEnd: number): Fragment {
   const node = side < 0 ? fragment.firstChild! : fragment.lastChild!;
@@ -119,8 +328,15 @@ function closeRange(fragment: Fragment, side: -1 | 1, from: number, to: number, 
   return fragment.replaceChild(side < 0 ? 0 : fragment.childCount - 1, node.copy(inner));
 }
 
+/** Insert an inline clipboard slice as literal text into the active selection or block replacement. */
 function insertInline(transaction: Transaction, slice: Slice): void {
   const selection = transaction.selection;
+  const schema = transaction.doc.type.schema;
+  if (selection instanceof BlockSelection) {
+    const text = slice.content.textBetween(0, slice.content.size, '', '\n');
+    selection.replace(transaction, text ? new Slice(Fragment.from(schema.text(text)), 0, 0) : Slice.empty);
+    return;
+  }
   if (!selection.empty) {
     const pos = remove(transaction, selection.from, selection.to);
     if (selection instanceof TextSelection) {
@@ -131,11 +347,13 @@ function insertInline(transaction: Transaction, slice: Slice): void {
   transaction.insertText(slice.content.textBetween(0, slice.content.size, '', '\n'));
 }
 
+/** Replace the transaction's selection with `slice` and place the caret near the trailing seam. */
 function replaceSelection(transaction: Transaction, slice: Slice): void {
   const after = replace(transaction, transaction.selection.from, transaction.selection.to, slice);
   transaction.setSelection(Selection.near(transaction.doc.resolve(after), -1));
 }
 
+/** Insert block `content`, wrapping any retained footnote continuation paragraph into a pasted trailing list. */
 function insertBlocks(transaction: Transaction, content: Fragment): void {
   const selection = transaction.selection;
   const { $from, $to } = selection;
@@ -192,6 +410,7 @@ function listItems(content: Fragment, type: NodeType): Fragment {
   return Fragment.fromArray(items);
 }
 
+/** Whether the first or last child of `item` is an ordinary untasked `paragraph` able to join inline text. */
 function paragraphSeam(item: Node, side: 'first' | 'last'): boolean {
   const node = side === 'first' ? item.firstChild : item.lastChild;
   return item.attrs.checked === null && node?.type === item.type.schema.nodes.paragraph;
@@ -216,6 +435,7 @@ function insertItems(transaction: Transaction, content: Fragment): void {
   transaction.insertText('', $from.pos, $to.pos);
   const position = transaction.selection.from;
   split(transaction, position, 2);
+  // Splitting at depth 2 inserts `</paragraph></listItem><listItem><paragraph>` (2 tokens) before the suffix item.
   const boundary = position + 2;
   let end = boundary;
   for (const incoming of items.content) {
@@ -226,9 +446,11 @@ function insertItems(transaction: Transaction, content: Fragment): void {
   if (!left && item.attrs.checked !== null) update(transaction, end, { checked: item.attrs.checked });
   const caret = Selection.near(transaction.doc.resolve(end), -1);
   const followingField = !(caret instanceof TextSelection);
+  // `end` opens the suffix `listItem` (+1) and its first block (+1), landing at its start.
   transaction.setSelection(followingField ? TextSelection.create(transaction.doc, end + 2) : caret);
   if (!right && !followingField) remove(transaction, end, end + suffix.nodeSize);
   else if (joinRight) {
+    // Join the adjacent `listItem` shells at `end`, then merge the trailing seam paragraphs at `end - 1`.
     join(transaction, end);
     join(transaction, end - 1);
   }
@@ -239,6 +461,7 @@ function insertItems(transaction: Transaction, content: Fragment): void {
   }
 }
 
+/** Unwrap a single single-line field wrapped only by list/quote containers for mid-paragraph inline pasting. */
 function singleField(content: Fragment): Node | null {
   if (content.childCount !== 1) return null;
   let node = content.firstChild!;

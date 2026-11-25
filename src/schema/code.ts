@@ -388,8 +388,13 @@ class CodeView implements BlockView {
   private readonly controlHold: ControlHold;
   private destroyed = false;
 
-  constructor(private node: Node, readonly view: EditorView,
-    readonly getPos: () => number | undefined, private readonly remove: () => void, editor?: KagamiMD) {
+  constructor(
+    private node: Node,
+    readonly view: EditorView,
+    readonly getPos: () => number | undefined,
+    private readonly remove: () => void,
+    private readonly editor?: KagamiMD,
+  ) {
     const document = view.dom.ownerDocument;
     this.dom = document.createElement('div');
     this.dom.className = 'md-code-block';
@@ -410,24 +415,7 @@ class CodeView implements BlockView {
         else this.button.removeAttribute('aria-expanded');
       },
     });
-    this.button.onclick = () => {
-      if (this.destroyed || view.isDestroyed || !canRunCommand(view.state, view)) return;
-      const pos = getPos();
-      if (!editor || editor.isDestroyed() || pos === undefined) return;
-      const alive = () => !this.destroyed && !view.isDestroyed && !editor.isDestroyed();
-      editor._onDidClickCodeBlockLanguage.fire({
-        pos: pos as EditorLoc,
-        rect: this.button.getBoundingClientRect(),
-        language: this.language,
-        languages: codeBlockLanguages,
-        hold: () => this.controlHold.acquire(alive),
-        setLanguage: language => {
-          if (!alive()) return false;
-          const current = this.getPos();
-          return current !== undefined && editor.state.runCommand(setCodeLanguage(current, language || null));
-        },
-      });
-    };
+    this.button.onclick = () => this.requestLanguageMenu();
     this.button.onkeydown = event => {
       if (!view.isDestroyed && routeHistoryKey(view, event)) event.stopPropagation();
     };
@@ -435,6 +423,27 @@ class CodeView implements BlockView {
     this.pre.spellcheck = false;
     this.contentDOM = this.pre.appendChild(document.createElement('code'));
     this.sync();
+  }
+
+  /** Emit `_onDidClickCodeBlockLanguage` with live position, geometry, hold token, and setter. */
+  private requestLanguageMenu(): void {
+    const { editor, view } = this;
+    if (this.destroyed || view.isDestroyed || !canRunCommand(view.state, view)) return;
+    const pos = this.getPos();
+    if (!editor || editor.isDestroyed() || pos === undefined) return;
+    const alive = (): boolean => !this.destroyed && !view.isDestroyed && !editor.isDestroyed();
+    editor._onDidClickCodeBlockLanguage.fire({
+      pos: pos as EditorLoc,
+      rect: this.button.getBoundingClientRect(),
+      language: this.language,
+      languages: codeBlockLanguages,
+      hold: () => this.controlHold.acquire(alive),
+      setLanguage: language => {
+        if (!alive()) return false;
+        const current = this.getPos();
+        return current !== undefined && editor.state.runCommand(setCodeLanguage(current, language || null));
+      },
+    });
   }
 
   get box(): HTMLElement { return this.dom; }
@@ -452,6 +461,7 @@ class CodeView implements BlockView {
     return ['', 'text', 'txt', 'plain', 'plaintext'].includes(value.toLowerCase()) ? '' : value;
   }
 
+  /** Refresh code fence language dataset, disabled flag, and displayed language label. */
   sync(): void {
     const value: string | null = this.node.attrs.language;
     if (value) this.pre.dataset.lang = value;
@@ -462,6 +472,7 @@ class CodeView implements BlockView {
     if (this.label.textContent !== label) this.label.textContent = label;
   }
 
+  /** Reuse the DOM wrapper across `codeBlock` updates so selection and code content stay intact. */
   update(node: Node): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
@@ -469,22 +480,23 @@ class CodeView implements BlockView {
     return true;
   }
 
+  /** Isolate button events from ProseMirror's editor surface; Undo/Redo keys route through `button.onkeydown`. */
   stopEvent(event: Event): boolean {
-    if (!this.button.contains(event.target as DOMNode)) return false;
-    if (event.type !== 'keydown') return true;
-    const key = event as KeyboardEvent;
-    return key.altKey || !(key.metaKey || key.ctrlKey) || !['z', 'y'].includes(key.key.toLowerCase());
+    return this.button.contains(event.target as DOMNode);
   }
 
+  /** Ignore toolbar and `data-lang` attribute updates outside the editable code element. */
   ignoreMutation(mutation: ViewMutationRecord): boolean {
     return mutation.type !== 'selection' && (this.toolbar.contains(mutation.target) ||
       mutation.type === 'attributes' && mutation.target === this.pre && mutation.attributeName === 'data-lang');
   }
 
+  /** Release listener callbacks and unregister this view from `codeBlockView`. */
   destroy(): void {
     this.destroyed = true;
     this.remove();
-    this.button.onclick = this.button.onkeydown = null;
+    this.button.onclick = null;
+    this.button.onkeydown = null;
   }
 }
 

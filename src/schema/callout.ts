@@ -8,7 +8,7 @@
 import { routeHistoryKey } from '../editor/input.js';
 import { canRunCommand } from '../state/input.js';
 import type { Node } from 'prosemirror-model';
-import { Plugin, TextSelection, type Command as PMCommand, type EditorState, type Transaction } from 'prosemirror-state';
+import { Plugin, Selection, TextSelection, type Command as PMCommand, type EditorState, type Transaction } from 'prosemirror-state';
 import type { EditorView, ViewMutationRecord } from 'prosemirror-view';
 import { CalloutDeclarationSyntax, type Parser } from '../syntax/index.js';
 import { CompletionField } from './completionfield.js';
@@ -31,18 +31,18 @@ import { realizeCalloutTitle } from '../transform/realize.js';
 import { mapTextSelection } from '../state/selection.js';
 import { schema } from '../types/schema.js';
 
-/** Callout frames, editable titles and declaration completion. */
+/** Callout frames, editable titles, and declaration completion. */
 export function callout(): PluginDesc[] {
   return [PluginDesc.view(calloutView)];
 }
 
-/** Mounted callout frames and title controls. */
+/** Mounted callout frames and title controls kept in sync with document edits. */
 function calloutView(editor?: KagamiMD): Plugin {
   const titles = new Set<TitleView>();
   return new Plugin({
     props: {
       nodeViews: {
-        callout: frame,
+        callout: calloutFrameView,
         calloutTitle(node, view, getPos) {
           const title = new TitleView(node, view, getPos, () => titles.delete(title), editor);
           titles.add(title);
@@ -53,7 +53,9 @@ function calloutView(editor?: KagamiMD): Plugin {
     view(view) {
       return {
         update() {
-          for (const title of titles) if (title.view === view) title.sync();
+          for (const title of titles) {
+            if (title.view === view) title.sync();
+          }
         },
       };
     },
@@ -67,15 +69,19 @@ export function correctCallout(tr: Transaction, fields: CorrectionFields): void 
   }
 }
 
-/** The supported declarations, in completion order. */
+/** Supported callout declarations, ordered as published in completion and type menus. */
 const calloutTypeOrder: readonly KagamiMD.CalloutType[] = ['note', 'tip', 'important', 'warning', 'caution'];
 
-/** The default title for each declaration. */
+/** Default localized placeholder title for each callout declaration. */
 export const calloutLabels: Record<KagamiMD.CalloutType, string> = {
-  note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution',
+  note: 'Note',
+  tip: 'Tip',
+  important: 'Important',
+  warning: 'Warning',
+  caution: 'Caution',
 };
 
-/** The icon displayed beside a callout's editable title. */
+/** 24x24 SVG stroke path data rendered inside each callout heading button and menu item. */
 export const calloutIcons: Record<KagamiMD.CalloutType, string> = {
   note:
     '<rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 8h7" /><path d="M8 12h6" /><path d="M11 16h5" />',
@@ -85,11 +91,12 @@ export const calloutIcons: Record<KagamiMD.CalloutType, string> = {
   caution: '<path d="M12 16h.01" /><path d="M12 8v4" /><path d="M15.312 2a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586l-4.688-4.688A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2z" />',
 };
 
+/** Frozen choice objects shared with every callout type-picker event payload. */
 const calloutTypeChoices: readonly KagamiMD.CalloutTypeChoice[] = Object.freeze(
   calloutTypeOrder.map(value => Object.freeze({ value, label: calloutLabels[value] })),
 );
 
-/** Complete the first paragraph of a quote from the feature's supported declarations. */
+/** Complete `[!` in the first paragraph of a quote using the parser's declaration grammar. */
 export const calloutCompletionSource: CompletionSource<KagamiMD.CalloutCompletionCandidate> = {
   kind: 'callout',
   match(state) {
@@ -97,20 +104,31 @@ export const calloutCompletionSource: CompletionSource<KagamiMD.CalloutCompletio
     if (!field) return null;
     const { head, caret } = field;
     const before = field.source.slice(0, caret);
-    // [! is an affordance only in the first paragraph of a quote.
-    if (head.parent.type !== schema.nodes.paragraph || head.depth <= 1 ||
-        head.node(-1).type !== schema.nodes.blockQuote || head.index(-1) !== 0 ||
-        !before.startsWith('[!') || /[\s\[\]!]/u.test(before.slice(2))) return null;
+    // `[!` opens callout completion only in the first paragraph of a block quote.
+    if (
+      head.parent.type !== schema.nodes.paragraph ||
+      head.depth <= 1 ||
+      head.node(-1).type !== schema.nodes.blockQuote ||
+      head.index(-1) !== 0 ||
+      !before.startsWith('[!') ||
+      /[\s\[\]!]/u.test(before.slice(2))
+    ) {
+      return null;
+    }
     const declaration = field.parse(field.source, true).find(node => node instanceof CalloutDeclarationSyntax);
     const closing = declaration instanceof CalloutDeclarationSyntax
-      ? declaration.closing.start : field.source.indexOf(']', caret);
-    const to = closing >= caret && !/[\s\[!]/u.test(field.source.slice(caret, closing)) ? closing + 1 : caret;
+      ? declaration.closing.start
+      : field.source.indexOf(']', caret);
+    // Consume an existing `]` right after the typed prefix (such as `[!]`) so completion does not leave `[!TIP]]`.
+    let to = caret;
+    if (closing >= caret && !/[\s\[!]/u.test(field.source.slice(caret, closing))) to = closing + 1;
     return { query: before.slice(2), from: field.start, to: field.start + to };
   },
   enabled: () => true,
   candidates(query) {
     const lower = query.toLowerCase();
-    return calloutTypeOrder.filter(type => type.startsWith(lower) || calloutLabels[type].startsWith(lower))
+    return calloutTypeOrder
+      .filter(type => type.startsWith(lower) || calloutLabels[type].startsWith(lower))
       .map(type => ({ id: type, value: type, label: calloutLabels[type] }));
   },
   apply(candidate, prompt, state) {
@@ -118,13 +136,17 @@ export const calloutCompletionSource: CompletionSource<KagamiMD.CalloutCompletio
     if (!field || !candidate.value || /[\r\n]/u.test(candidate.value)) return null;
     const marker = `[!${candidate.value.toUpperCase()}]`;
     const tail = field.source.slice(prompt.to - field.start);
-    const replacement = marker + (tail && !/^[ \t\r\n]/.test(tail) ? ' ' : '');
+    // A callout declaration must end the line or precede horizontal whitespace, so `[!]Title` needs one space.
+    const separator = tail && !/^[ \t\r\n]/.test(tail) ? ' ' : '';
+    const replacement = marker + separator;
     const source = field.replace(prompt.from, prompt.to, replacement);
     if (source === null) return null;
     const declaration = field.parse(source, true).find(node => node instanceof CalloutDeclarationSyntax);
-    const valid = prompt.from === field.start && declaration instanceof CalloutDeclarationSyntax &&
+    const valid =
+      prompt.from === field.start &&
+      declaration instanceof CalloutDeclarationSyntax &&
       declaration.calloutType === candidate.value &&
-        source.slice(declaration.start, declaration.closing.end) === marker;
+      source.slice(declaration.start, declaration.closing.end) === marker;
     return valid ? replacement : null;
   },
   same: () => true,
@@ -135,24 +157,14 @@ export const calloutCompletionSource: CompletionSource<KagamiMD.CalloutCompletio
   ): KagamiMD.CalloutCompletion => ({ kind: 'callout', ...state, ...actions }),
 };
 
-/** Set a callout declaration, converting a quote when needed. */
+/** Set a callout declaration at `position` or the selection, converting a quote when needed. */
 export function setCalloutType(type: KagamiMD.CalloutType, position?: number): PMCommand {
   return (state, dispatch) => {
     if (!calloutTypeOrder.includes(type)) return false;
-    let pos = position;
-    if (pos === undefined) {
-      const from = state.selection.$from;
-      for (let depth = from.depth; depth > 0; depth--) {
-        const nodeType = from.node(depth).type;
-        if (nodeType === schema.nodes.callout || nodeType === schema.nodes.blockQuote) {
-          pos = from.before(depth);
-          break;
-        }
-      }
-    }
-    if (pos === undefined) return false;
+    const pos = position ?? nearestQuoteOrCalloutPos(state);
+    if (pos === undefined || pos < 0 || pos > state.doc.content.size) return false;
     const node = state.doc.nodeAt(pos);
-    if (!node || node.type !== schema.nodes.callout && node.type !== schema.nodes.blockQuote) return false;
+    if (!node || (node.type !== schema.nodes.callout && node.type !== schema.nodes.blockQuote)) return false;
     if (node.type === schema.nodes.callout) {
       if (node.attrs.calloutType !== type && dispatch) {
         const tr = state.tr;
@@ -162,165 +174,261 @@ export function setCalloutType(type: KagamiMD.CalloutType, position?: number): P
       return true;
     }
     if (!dispatch) return true;
-    const empty = node.childCount === 1 && node.firstChild!.type === schema.nodes.paragraph &&
-      !node.firstChild!.content.size;
-    const children: Shape[] = [{
-      kind: 'text', type: schema.nodes.calloutTitle, meaning: {},
-      text: empty ? [{ kind: 'range', from: pos + 2, to: pos + 2 }] : [],
-    }];
-    if (!empty) node.forEach((child, offset) => children.push(keptShape(child, pos + 1 + offset)));
-    const tr = state.tr;
-    mapTextSelection(tr, range => reshape(tr, pos!, pos! + node.nodeSize, [{
-      kind: 'children', type: schema.nodes.callout, meaning: { calloutType: type }, children,
-    }], range));
-    dispatch(tr.scrollIntoView());
+    dispatch(convertQuoteToCallout(state, pos, type).scrollIntoView());
     return true;
   };
 }
 
-/** Make the authored title a paragraph and keep the ordinary body blocks. */
+/** Convert the callout at `position` or the selection into an ordinary quote block. */
 export function calloutToQuote(position?: number): PMCommand {
   return (state, dispatch) => {
-    const pos = position ?? selectedCallout(state)?.pos;
-    if (pos === undefined) return false;
+    const pos = position ?? selectedCalloutPos(state);
+    if (pos === undefined || pos < 0 || pos > state.doc.content.size) return false;
     const node = state.doc.nodeAt(pos);
     if (node?.type !== schema.nodes.callout) return false;
     if (!dispatch) return true;
-    const title = node.firstChild!;
-    const children: Shape[] = [];
-    if (title.content.size) children.push({
-      kind: 'text', type: schema.nodes.paragraph, meaning: {},
-        text: [{ kind: 'range', from: pos + 2, to: pos + title.nodeSize }],
-    });
-    node.forEach((child, offset, index) => {
-      if (index) children.push(keptShape(child, pos + 1 + offset));
-    });
-    if (!children.length) children.push({ kind: 'text', type: schema.nodes.paragraph, meaning: {}, text: [] });
-    const tr = state.tr;
-    mapTextSelection(tr,
-      range => reshape(tr, pos!, pos! + node.nodeSize,
-      [{ kind: 'children', type: schema.nodes.blockQuote, meaning: {}, children }], range));
-    keepQuoteIntent(tr, pos + 2, getParser(state), BindingState.get(state));
-    if (!title.content.size && node.childCount === 1) tr.setSelection(TextSelection.create(tr.doc, pos + 2));
-    dispatch(tr.scrollIntoView());
+    dispatch(convertCalloutToQuote(state, pos).scrollIntoView());
     return true;
   };
 }
 
-/** Only the title start removes the callout frame; body blocks use the shared deletion commands. */
+/** Backspace at the start of a callout title converts it to a quote; body blocks defer to shared deletion. */
 export const calloutBackspace: PMCommand = (state, dispatch) => {
   const { selection } = state;
-  if (!(selection instanceof TextSelection) || !selection.empty || selection.$from.parentOffset) return false;
-  const found = selectedCallout(state);
-  const field = selection.$from.parent;
-  if (!found || field.type !== schema.nodes.calloutTitle) return false;
-  return calloutToQuote(found.pos)(state, dispatch);
+  if (!(selection instanceof TextSelection) || !selection.empty || selection.$from.parentOffset !== 0) {
+    return false;
+  }
+  if (selection.$from.parent.type !== schema.nodes.calloutTitle) return false;
+  // Schema allows `calloutTitle` only as child 0 of `callout`, so `$from.before(-1)` is the callout.
+  return calloutToQuote(selection.$from.before(-1))(state, dispatch);
 };
 
-/** Enter opens or splits the body, or leaves its final empty paragraph. */
+/** Enter splits a callout title into a body paragraph, splits a body paragraph, or exits its final empty body. */
 export const enterCallout: PMCommand = (state, dispatch) => {
   const { selection } = state;
   if (!(selection instanceof TextSelection)) return false;
-  if (selection.$from.parent.type === schema.nodes.calloutTitle) return splitTitle(state, dispatch);
-  if (!selection.empty) return false;
-  const found = selectedCallout(state);
-  if (!found || selection.$from.depth !== found.depth + 1 || selection.$from.parent.type !== schema.nodes.paragraph)
-    return false;
-  if (dispatch) {
-    const tr = state.tr;
-    if (!selection.$from.parent.content.size && found.index === found.node.childCount - 1) {
-      const end = found.pos + found.node.nodeSize;
-      insert(tr, end, schema.nodes.paragraph, {});
-      remove(tr, selection.$from.before(), selection.$from.after());
-      tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(end, -1)), 1));
-      dispatch(tr.scrollIntoView());
-    } else {
-      split(tr, selection.from, 1);
-      dispatch(tr);
-    }
+  const { $from } = selection;
+  if ($from.parent.type === schema.nodes.calloutTitle) {
+    if (!dispatch) return true;
+    const tr = splitCalloutTitle(state);
+    if (!tr) return false;
+    dispatch(tr.scrollIntoView());
+    return true;
   }
+  if (!selection.empty || $from.depth < 2 || $from.parent.type !== schema.nodes.paragraph ||
+      $from.node(-1).type !== schema.nodes.callout) {
+    return false;
+  }
+  if (!dispatch) return true;
+  const callout = $from.node(-1);
+  if ($from.parent.content.size === 0 && $from.index(-1) === callout.childCount - 1) {
+    dispatch(exitTrailingBodyParagraph(state).scrollIntoView());
+    return true;
+  }
+  const tr = state.tr;
+  split(tr, selection.from, 1);
+  dispatch(tr);
   return true;
 };
 
-interface CalloutPosition {
-  readonly node: Node;
-  readonly pos: number;
-  readonly depth: number;
-  readonly index: number;
+/** Position of the innermost enclosing `callout` or `blockQuote` around `$from`, or `undefined`. */
+function nearestQuoteOrCalloutPos(state: EditorState): number | undefined {
+  const { $from } = state.selection;
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const type = $from.node(depth).type;
+    if (type === schema.nodes.callout || type === schema.nodes.blockQuote) return $from.before(depth);
+  }
+  return undefined;
 }
 
-function selectedCallout(state: EditorState): CalloutPosition | null {
+/** Position of the enclosing `callout` when the whole selection stays inside it, or `undefined`. */
+function selectedCalloutPos(state: EditorState): number | undefined {
   const { $from, $to } = state.selection;
   for (let depth = $from.depth; depth > 0; depth--) {
     if ($from.node(depth).type !== schema.nodes.callout) continue;
-    if ($to.pos > $from.after(depth)) return null;
-    return { node: $from.node(depth), pos: $from.before(depth), depth, index: $from.index(depth) };
+    return $to.pos > $from.after(depth) ? undefined : $from.before(depth);
   }
-  return null;
+  return undefined;
 }
 
-/** An explicit quote conversion keeps a newly exposed declaration literal. The
- * reader identifies it; the escape is editable text in this history event. */
-function keepQuoteIntent(tr: Transaction, position: number, parser: Parser,
-  before: BindingState): void {
-  const field = tr.doc.resolve(position);
-  if (field.parent.type !== schema.nodes.paragraph || field.depth < 2 ||
-      field.node(-1).type !== schema.nodes.blockQuote || field.index(-1)) return;
+/** Retained source shapes for every body block after child 0 (`calloutTitle`) of `callout`. */
+function keptCalloutBody(callout: Node, calloutPos: number): Shape[] {
+  const body: Shape[] = [];
+  // Child positions inside `callout` start at `calloutPos + 1`, and index 0 is always `calloutTitle`.
+  callout.forEach((child, offset, index) => {
+    if (index > 0) body.push(keptShape(child, calloutPos + 1 + offset));
+  });
+  return body;
+}
+
+/** Reshape `quotePos` into a `callout` with an empty title while preserving authored body blocks and caret. */
+function convertQuoteToCallout(state: EditorState, quotePos: number, type: KagamiMD.CalloutType): Transaction {
+  const quote = state.doc.nodeAt(quotePos)!;
+  const firstChild = quote.firstChild!;
+  const isEmptyQuote =
+    quote.childCount === 1 &&
+    firstChild.type === schema.nodes.paragraph &&
+    firstChild.content.size === 0;
+  // On an empty `>` quote (`quotePos + 1` paragraph start, `+ 1` text start), adopt that single
+  // empty range as the title's carrier instead of leaving an extra empty body paragraph behind.
+  const emptyTextPos = quotePos + 2;
+  const children: Shape[] = [{
+    kind: 'text',
+    type: schema.nodes.calloutTitle,
+    meaning: {},
+    text: isEmptyQuote ? [{ kind: 'range', from: emptyTextPos, to: emptyTextPos }] : [],
+  }];
+  if (!isEmptyQuote) {
+    quote.forEach((child, offset) => children.push(keptShape(child, quotePos + 1 + offset)));
+  }
+  const tr = state.tr;
+  mapTextSelection(tr, range => reshape(tr, quotePos, quotePos + quote.nodeSize, [{
+    kind: 'children',
+    type: schema.nodes.callout,
+    meaning: { calloutType: type },
+    children,
+  }], range));
+  return tr;
+}
+
+/** Reshape `calloutPos` into a `blockQuote`, escaping any declaration newly exposed at its start. */
+function convertCalloutToQuote(state: EditorState, calloutPos: number): Transaction {
+  const callout = state.doc.nodeAt(calloutPos)!;
+  const title = callout.firstChild!;
+  const emptyTitle = title.content.size === 0;
+  const collapsedInEmptyTitle =
+    emptyTitle &&
+    state.selection instanceof TextSelection &&
+    state.selection.empty &&
+    state.selection.from === calloutPos + 2;
+  const children: Shape[] = [];
+  if (!emptyTitle) {
+    // `calloutPos + 1` opens child 0 (`calloutTitle`) and `+ 1` enters its inline text.
+    const titleTextStart = calloutPos + 2;
+    children.push({
+      kind: 'text',
+      type: schema.nodes.paragraph,
+      meaning: {},
+      text: [{ kind: 'range', from: titleTextStart, to: titleTextStart + title.content.size }],
+    });
+  }
+  children.push(...keptCalloutBody(callout, calloutPos));
+  if (children.length === 0) {
+    children.push({ kind: 'text', type: schema.nodes.paragraph, meaning: {}, text: [] });
+  }
+  const tr = state.tr;
+  mapTextSelection(tr, range =>
+    reshape(tr, calloutPos, calloutPos + callout.nodeSize, [{
+      kind: 'children',
+      type: schema.nodes.blockQuote,
+      meaning: {},
+      children,
+    }], range),
+  );
+  // If the first remaining body node is an atomic block (for example `thematicBreak`), `map`
+  // jumps to a later kept range or leaves the caret before it; select nearest valid position forward.
+  if (collapsedInEmptyTitle) tr.setSelection(Selection.near(tr.doc.resolve(calloutPos + 1), 1));
+  escapeExposedDeclaration(tr, calloutPos, getParser(state), BindingState.get(state));
+  return tr;
+}
+
+/** Escape a declaration newly exposed at the start of a converted quote's first paragraph so it stays ordinary text. */
+function escapeExposedDeclaration(tr: Transaction, quotePos: number, parser: Parser, before: BindingState): void {
+  const quote = tr.doc.nodeAt(quotePos);
+  // Only child 0 when it is a paragraph can re-parse `[!TYPE]` as a callout declaration.
+  if (quote?.type !== schema.nodes.blockQuote || quote.firstChild?.type !== schema.nodes.paragraph) return;
+  const field = tr.doc.resolve(quotePos + 2);
   const result = readField(field, parser, BindingState.after(before, tr));
   if (result.kind !== 'inline') return;
   const declaration = result.children.find(node => node.type === 'calloutDeclaration');
-  if (declaration) tr.insertText('\\', field.start() + declaration.start);
+  if (!declaration) return;
+  const escapePos = field.start() + declaration.start;
+  const selection = tr.selection;
+  const step = tr.steps.length;
+  tr.insertText('\\', escapePos);
+  // Keep a caret at the start of the exposed declaration before the inserted escape backslash.
+  if (selection instanceof TextSelection) {
+    const mapping = tr.mapping.slice(step);
+    const anchor = mapping.map(selection.anchor, selection.anchor === escapePos ? -1 : 1);
+    const head = mapping.map(selection.head, selection.head === escapePos ? -1 : 1);
+    tr.setSelection(TextSelection.create(tr.doc, anchor, head));
+  }
 }
 
-const splitTitle: PMCommand = (state, dispatch) => {
+/** Split the active `calloutTitle` (after collapsing any cross-field selection) into title + first body paragraph. */
+function splitCalloutTitle(state: EditorState): Transaction | null {
   const { $from, $to } = state.selection;
-  if ($from.parent.type !== schema.nodes.calloutTitle) return false;
-  if (!dispatch) return true;
+  if ($from.parent.type !== schema.nodes.calloutTitle) return null;
   const tr = state.tr;
   const removed = !$from.sameParent($to) ? remove(tr, $from.pos, $to.pos) : null;
   const seam = removed !== null ? tr.doc.resolve(removed) : null;
   const start = seam ?? tr.selection.$from;
   const end = seam ?? tr.selection.$to;
-  if (start.parent.type !== schema.nodes.calloutTitle || !start.sameParent(end)) return false;
-  const pos = start.before(start.depth - 1);
-  const node = start.node(-1);
+  if (start.parent.type !== schema.nodes.calloutTitle || !start.sameParent(end)) return null;
+  const calloutPos = start.before(-1);
+  const callout = start.node(-1);
   const children: Shape[] = [
     {
-      kind: 'text', type: schema.nodes.calloutTitle, meaning: {},
-      text: [{ kind: 'range', from: start.start(), to: start.pos }]
+      kind: 'text',
+      type: schema.nodes.calloutTitle,
+      meaning: {},
+      text: [{ kind: 'range', from: start.start(), to: start.pos }],
     },
     {
-      kind: 'text', type: schema.nodes.paragraph, meaning: {},
-      text: [{ kind: 'range', from: end.pos, to: end.end() }]
+      kind: 'text',
+      type: schema.nodes.paragraph,
+      meaning: {},
+      text: [{ kind: 'range', from: end.pos, to: end.end() }],
     },
+    ...keptCalloutBody(callout, calloutPos),
   ];
-  node.forEach((child, offset, index) => {
-    if (index) children.push(keptShape(child, pos + 1 + offset));
-  });
-  mapTextSelection(tr, range => reshape(tr, pos!, pos! + node.nodeSize, [{
-    kind: 'children', type: schema.nodes.callout, meaning: { calloutType: node.attrs.calloutType }, children,
+  mapTextSelection(tr, range => reshape(tr, calloutPos, calloutPos + callout.nodeSize, [{
+    kind: 'children',
+    type: schema.nodes.callout,
+    meaning: { calloutType: callout.attrs.calloutType },
+    children,
   }], range));
-  dispatch(tr.setSelection(TextSelection.create(tr.doc, start.before() + start.parentOffset + 3)).scrollIntoView());
-  return true;
-};
+  const updated = tr.doc.nodeAt(calloutPos)!;
+  // Place the caret at the start of child 1 (the newly created first body paragraph) right after child 0.
+  const firstBodyStart = calloutPos + 1 + updated.firstChild!.nodeSize + 1;
+  return tr.setSelection(TextSelection.create(tr.doc, firstBodyStart));
+}
 
-/** A default title is presentation, separate from the stable editable title DOM. */
+/** Exit a trailing empty body paragraph by inserting a sibling paragraph after the callout and removing the empty one. */
+function exitTrailingBodyParagraph(state: EditorState): Transaction {
+  const { $from } = state.selection;
+  const afterCallout = $from.after(-1);
+  const tr = state.tr;
+  // Insert outside first and delete the empty body rather than `lift`, so leaving a callout's sole body block
+  // retains a valid header-only `callout(calloutTitle)` node.
+  insert(tr, afterCallout, schema.nodes.paragraph, {});
+  remove(tr, $from.before(), $from.after());
+  return tr.setSelection(TextSelection.near(tr.doc.resolve(tr.mapping.map(afterCallout, -1)), 1));
+}
+
+/** Heading DOM for a `calloutTitle`: stable `contentDOM` paired with an uneditable type-picker button. */
 class TitleView implements BlockView {
   readonly dom: HTMLDivElement;
   readonly contentDOM: HTMLSpanElement;
+  private readonly mount: HTMLSpanElement;
   private readonly button: HTMLButtonElement;
   private readonly icon: SVGSVGElement;
   private readonly controlHold: ControlHold;
   private destroyed = false;
 
-  constructor(private node: Node, readonly view: EditorView,
-    private readonly getPos: () => number | undefined, private readonly remove: () => void, editor?: KagamiMD) {
+  constructor(
+    private node: Node,
+    readonly view: EditorView,
+    private readonly getPos: () => number | undefined,
+    private readonly remove: () => void,
+    private readonly editor?: KagamiMD,
+  ) {
     const document = view.dom.ownerDocument;
     this.dom = document.createElement('div');
     this.dom.className = 'md-callout-heading';
     // The control follows the title in the DOM and is drawn first by CSS: Chrome loses a
     // composition at the start of text that an uneditable element precedes.
-    const mount = document.createElement('span');
+    const mount = this.mount = document.createElement('span');
     mount.className = 'md-callout-type-control';
     mount.contentEditable = 'false';
     this.button = mount.appendChild(document.createElement('button'));
@@ -337,64 +445,81 @@ class TitleView implements BlockView {
     this.dom.appendChild(mount);
     this.controlHold = new ControlHold({
       element: () => this.button,
-      pos: () => this.position(),
+      pos: () => this.calloutPos(),
       held: value => {
         if (value) this.button.setAttribute('aria-expanded', 'true');
         else this.button.removeAttribute('aria-expanded');
       },
     });
-    this.button.onclick = () => {
-      if (this.destroyed || view.isDestroyed || !canRunCommand(view.state, view)) return;
-      const pos = this.position();
-      if (!editor || editor.isDestroyed() || pos === undefined) return;
-      const alive = () => !this.destroyed && !view.isDestroyed && !editor.isDestroyed();
-      editor._onDidClickCalloutType.fire({
-        pos: pos as EditorLoc,
-        rect: this.button.getBoundingClientRect(),
-        type: this.calloutType,
-        types: calloutTypeChoices,
-        hold: () => this.controlHold.acquire(alive),
-        setType: type => {
-          if (!alive()) return false;
-          const current = this.position();
-          return current !== undefined && editor.state.runCommand(setCalloutType(type, current));
-        },
-        toQuote: () => {
-          if (!alive()) return false;
-          const current = this.position();
-          return current !== undefined && editor.state.runCommand(calloutToQuote(current));
-        },
-      });
-    };
+    this.button.onclick = () => this.requestTypeMenu();
     this.button.onkeydown = event => {
       if (!view.isDestroyed && routeHistoryKey(view, event)) event.stopPropagation();
     };
     this.sync();
   }
 
-  private position(): number | undefined {
-    if (this.view.isDestroyed) return undefined;
-    const pos = this.getPos();
-    return pos === undefined || pos === 0 || this.view.state.doc.nodeAt(pos - 1)?.type !== schema.nodes.callout
-      ? undefined : pos - 1;
+  /** Emit `_onDidClickCalloutType` with the live position, geometry, hold token, and mutation callbacks. */
+  private requestTypeMenu(): void {
+    const { editor, view } = this;
+    if (this.destroyed || view.isDestroyed || !canRunCommand(view.state, view)) return;
+    const pos = this.calloutPos();
+    if (!editor || editor.isDestroyed() || pos === undefined) return;
+    const alive = (): boolean => !this.destroyed && !view.isDestroyed && !editor.isDestroyed();
+    editor._onDidClickCalloutType.fire({
+      pos: pos as EditorLoc,
+      rect: this.button.getBoundingClientRect(),
+      type: this.calloutType,
+      types: calloutTypeChoices,
+      hold: () => this.controlHold.acquire(alive),
+      setType: type => {
+        if (!alive()) return false;
+        const current = this.calloutPos();
+        return current !== undefined && editor.state.runCommand(setCalloutType(type, current));
+      },
+      toQuote: () => {
+        if (!alive()) return false;
+        const current = this.calloutPos();
+        return current !== undefined && editor.state.runCommand(calloutToQuote(current));
+      },
+    });
   }
 
+  /** Position of the owning `callout` node, or `undefined` when detached or view-destroyed. */
+  private calloutPos(): number | undefined {
+    if (this.view.isDestroyed) return undefined;
+    const titlePos = this.getPos();
+    // Schema guarantees `calloutTitle` is child 0 of `callout`, so the parent opens at `titlePos - 1`.
+    if (titlePos === undefined || titlePos === 0) return undefined;
+    const parentPos = titlePos - 1;
+    return this.view.state.doc.nodeAt(parentPos)?.type === schema.nodes.callout ? parentPos : undefined;
+  }
+
+  /** Declared callout type read from the owning node, defaulting to `'note'` before attachment. */
   private get calloutType(): KagamiMD.CalloutType {
-    const pos = this.position();
+    const pos = this.calloutPos();
     return pos === undefined ? 'note' : this.view.state.doc.nodeAt(pos)!.attrs.calloutType;
   }
 
+  /** Refresh child framing, button state, icon SVG path, and empty-title placeholder. */
   sync(): void {
+    if (
+      this.dom.childNodes.length !== 2 ||
+      this.dom.firstChild !== this.contentDOM ||
+      this.dom.lastChild !== this.mount
+    ) {
+      this.dom.replaceChildren(this.contentDOM, this.mount);
+    }
     const type = this.calloutType;
     this.button.disabled = !this.view.editable;
     if (this.icon.dataset.kind !== type) {
       this.icon.dataset.kind = type;
       this.icon.innerHTML = calloutIcons[type];
     }
-    const placeholder = this.node.content.size ? '' : calloutLabels[type];
+    const placeholder = this.node.content.size > 0 ? '' : calloutLabels[type];
     if (this.contentDOM.dataset.placeholder !== placeholder) this.contentDOM.dataset.placeholder = placeholder;
   }
 
+  /** Reuse the DOM wrapper when updates affect only the `calloutTitle` node or enclosing `callout` type. */
   update(node: Node): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
@@ -402,43 +527,49 @@ class TitleView implements BlockView {
     return true;
   }
 
+  /** Isolate button events from ProseMirror's editor surface; Undo/Redo keys route through `button.onkeydown`. */
   stopEvent(event: Event): boolean {
-    if (!this.button.contains(event.target as DOMNode)) return false;
-    if (event.type === 'keydown') {
-      const key = event as KeyboardEvent;
-      if (!key.altKey && (key.metaKey || key.ctrlKey) && ['z', 'y'].includes(key.key.toLowerCase())) return false;
-    }
-    return true;
+    return this.button.contains(event.target as DOMNode);
   }
 
+  /** Ignore heading-chrome and attribute mutations outside the editable title text. */
   ignoreMutation(mutation: ViewMutationRecord): boolean {
-    return mutation.type !== 'selection' && (!this.contentDOM.contains(mutation.target) ||
-      mutation.type === 'attributes' && mutation.target === this.contentDOM);
+    if (mutation.type === 'selection') return false;
+    if (mutation.type === 'childList' && mutation.target === this.dom) return false;
+    return (
+      !this.contentDOM.contains(mutation.target) ||
+      (mutation.type === 'attributes' && mutation.target === this.contentDOM)
+    );
   }
 
+  /** Release listener callbacks and unregister this heading view from `calloutView`. */
   destroy(): void {
     this.destroyed = true;
     this.remove();
-    this.button.onclick = this.button.onkeydown = null;
+    this.button.onclick = null;
+    this.button.onkeydown = null;
   }
 }
 
-/** Attribute changes update the frame without replacing the title or body DOM. */
-function frame(initial: Node, view: EditorView): BlockView {
+/** Attribute changes update the `<aside>` frame in place without replacing editable title or body DOM. */
+function calloutFrameView(initial: Node, view: EditorView): BlockView {
   const dom = view.dom.ownerDocument.createElement('div');
   dom.className = 'md-callout-frame';
   const contentDOM = dom.appendChild(view.dom.ownerDocument.createElement('aside'));
-  const draw = (node: Node) => {
+  const draw = (node: Node): void => {
     contentDOM.className = `md-callout md-callout-${node.attrs.calloutType}`;
     contentDOM.dataset.callout = node.attrs.calloutType;
   };
   draw(initial);
   return registerBlockView(initial, {
-    dom, contentDOM,
+    dom,
+    contentDOM,
     box: dom,
     content: contentDOM,
     brush: true,
-    get field() { return contentDOM.firstElementChild as HTMLElement; },
+    get field() {
+      return contentDOM.firstElementChild as HTMLElement;
+    },
     get handle(): HandleTarget {
       return { kind: 'text', target: nodeView(contentDOM.firstElementChild!)!.contentDOM! };
     },

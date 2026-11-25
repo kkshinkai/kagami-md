@@ -17,6 +17,9 @@ import { fieldOptions } from '../parse/field.js';
 export function inlineSource(slice: Slice, document: Node, parser: Parser, bindings: Bindings,
   context?: ResolvedPos): Slice {
   const writer = new SourceContext(parser, bindings, context);
+  if (writer.literal && slice.content.firstChild?.isInline) {
+    return slice;
+  }
   if (slice.content.firstChild?.isInline) {
     const field = document.type.schema.nodes.paragraph.create(null, slice.content);
     return new Slice(writer.node(field, null, 0).content, slice.openStart, slice.openEnd);
@@ -26,10 +29,12 @@ export function inlineSource(slice: Slice, document: Node, parser: Parser, bindi
 
 /** The destination's phrasing and bindings shared by one imported slice. */
 class SourceContext {
+  readonly literal: boolean;
   readonly table: boolean;
   readonly oneLine: boolean;
 
   constructor(readonly parser: Parser, readonly bindings: Bindings, context?: ResolvedPos) {
+    this.literal = Boolean(context?.parent.type.spec.code || context?.parent.type.spec.marks === '');
     this.table = Boolean(context && Array.from({ length: context.depth + 1 }, (_, depth) =>
       context.node(depth)).some(node => node.type.spec.tableRole === 'table'));
     this.oneLine = this.table || context?.parent.type.name === 'calloutTitle' ||
@@ -42,7 +47,8 @@ class SourceContext {
 
   node(node: Node, parent: Node | null, index: number): Node {
     // Markdown annotations already contain source, including its occurrence marks.
-    if (node.attrs.spelling != null || node.type.spec.code || node.isLeaf) return node;
+    if (this.literal || node.attrs.spelling != null || node.type.spec.code ||
+        node.type.spec.marks === '' || node.isLeaf) return node;
     if (!node.isTextblock) return node.copy(this.fragment(node.content, node));
     const options = fieldOptions(node, parent, index);
     const table = this.table || options.phrasing === 'tableCell';
@@ -95,9 +101,7 @@ class InlineWriter {
       }
       if (!mark) {
         const text = node.isText ? node.text! : '\n';
-        result += spelling === 'literal' ? text : spelling === 'references'
-          ? Array.from(text, character => /\s/u.test(character) ? character : `&#${character.codePointAt(0)};`).join('')
-          : text.replace(/[!-/:-@\[-`{-~]/g, '\\$&');
+        result += escapeUnmarkedText(text, spelling);
         index++;
         continue;
       }
@@ -200,4 +204,16 @@ function rendered(content: Fragment): Fragment {
     result.push(node.mark(marks));
   });
   return Fragment.fromArray(result);
+}
+
+/** Encode literal runs outside marks according to the container's inline escaping rule. */
+function escapeUnmarkedText(text: string, spelling: Spelling): string {
+  switch (spelling) {
+    case 'literal':
+      return text;
+    case 'references':
+      return Array.from(text, character => /\s/u.test(character) ? character : `&#${character.codePointAt(0)};`).join('');
+    case 'escaped':
+      return text.replace(/[!-/:-@\[-`{-~]/g, '\\$&');
+  }
 }

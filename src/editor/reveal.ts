@@ -41,7 +41,6 @@ export interface SourcePresentation {
   readonly decorations: DecorationSet;
   readonly selection: decorateBlocks.Range | null;
   readonly gesture: Gesture | null;
-  readonly previous: Gesture | null;
 }
 
 const revealKey = new PluginKey<SourcePresentation>('inline-presentation');
@@ -79,7 +78,7 @@ export function revealState(draw: RevealDraw, refresh: RevealRefresh = endpoints
       const selection = sourceEditingSelection(state);
       const visible = revealing(selection);
       const current = decorateBlocks(state.doc, (node, position) => draw(node, position, state, selection, visible));
-      return { current, decorations: current, selection, gesture: null, previous: null };
+      return { current, decorations: current, selection, gesture: null };
     },
     apply(transaction, value, before, state) {
       const selection = sourceEditingSelection(state);
@@ -91,22 +90,18 @@ export function revealState(draw: RevealDraw, refresh: RevealRefresh = endpoints
         refreshRanges(before, state, selection, transaction, refresh),
       );
       let gesture = value.gesture?.map(transaction) ?? null;
-      let previous = value.previous?.map(transaction) ?? null;
       const pointer = normalizationKey.getState(state);
       if (!pointer?.isPointerActive && !pointer?.isPointerSelecting) {
-        return { current, decorations: current, selection, gesture, previous };
+        return { current, decorations: current, selection, gesture };
       }
       const mapped = value.decorations.map(transaction.mapping, transaction.doc);
       const mappedSelection = mapRange(value.selection, transaction);
       if (pointer.presentationId && gesture?.id !== pointer.presentationId) {
-        const restored = previous?.id === pointer.presentationId ? previous : null;
-        previous = gesture;
-        gesture = restored ?? new Gesture(pointer.presentationId, mapped, mappedSelection);
+        gesture = new Gesture(pointer.presentationId, mapped, mappedSelection);
       }
       return {
         current,
         gesture,
-        previous,
         decorations: gesture ? gesture.origin : mapped,
         selection: gesture ? gesture.selection : mappedSelection,
       };

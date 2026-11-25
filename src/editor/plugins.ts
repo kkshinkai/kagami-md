@@ -15,7 +15,7 @@ import { blockPreview } from '../schema/blockpreview.js';
 import { callout, calloutCompletionSource } from '../schema/callout.js';
 import { codeBlock } from '../schema/code.js';
 import { codeSpan } from '../schema/codespan.js';
-import { frontmatter, pasteFrontmatterText } from '../schema/frontmatter.js';
+import { frontmatter } from '../schema/frontmatter.js';
 import { heading } from '../schema/heading.js';
 import { html } from '../schema/html.js';
 import { image } from '../schema/image.js';
@@ -28,7 +28,6 @@ import { tag, tagCompletionSource } from '../schema/tag.js';
 import { wikilinkCompletionSource } from '../schema/wikilink.js';
 import { tables } from '../table/table.js';
 import { tablePaste } from '../table/tablepaste.js';
-import { schema } from '../types/schema.js';
 import { blockDrag } from './blockdrag.js';
 import { blockView } from './blockview.js';
 import { clipboard } from './clipboard.js';
@@ -68,7 +67,7 @@ export function compilePlugins(spec: KagamiState.Spec = {}): CompiledPlugins {
     PluginDesc.viewState(() => blockDrag(blockPreview)),
     ...callout(),
     PluginDesc.viewState(editor => completion(sources, editor)),
-    PluginDesc.viewState(() => clipboard({ paste: [pasteFrontmatterText, tablePaste] })),
+    PluginDesc.viewState(() => clipboard({ paste: [tablePaste] })),
     PluginDesc.viewState(reveal),
     ...tagPlugins,
     ...codeSpan(),
@@ -80,7 +79,7 @@ export function compilePlugins(spec: KagamiState.Spec = {}): CompiledPlugins {
     ...heading(),
     ...tables(),
     ...math(),
-    PluginDesc.view(() => blockView(schema), PluginRank.Lowest),
+    PluginDesc.view(() => blockView(), PluginRank.Lowest),
     PluginDesc.view(editor => editor?.drawnSelection ? drawSelection() : null, PluginRank.Lowest),
   ]);
 }

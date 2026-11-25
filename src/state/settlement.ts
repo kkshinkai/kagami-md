@@ -261,7 +261,9 @@ class ConditionalSettlement {
     if (!quote) throw new RangeError('The callout declaration lost its quote');
     // The authored first field is read in quote context. Its origin is already
     // known; later body blocks remain native ranges in the reshape.
-    const { text, blocks, origins } = quoteReading(quote, fieldSource(quote.child(0)), container + 2, this.parser,
+    const firstFieldStart = container + 2;
+    const firstFieldEnd = container + quote.child(0).nodeSize;
+    const { text, blocks, origins } = quoteReading(quote, fieldSource(quote.child(0)), firstFieldStart, this.parser,
       bindings);
     if (!(blocks[0] instanceof CalloutSyntax)) throw new RangeError('The declaration must read as a callout');
     const authored = new Map<Shape, Node>();
@@ -278,8 +280,14 @@ class ConditionalSettlement {
     // The old quote supplies the shared outer frame. Its read title and body
     // retain their already-computed content through the same authored map.
     authored.delete(shape);
-    mapTextSelection(tr,
-      range => reshapeBlocks(tr, container, container + quote.nodeSize, [{ ...shape, children }], authored, range).map);
+    mapTextSelection(tr, range => {
+      const changed = reshapeBlocks(tr, container, container + quote.nodeSize, [{ ...shape, children }], authored,
+        range);
+      // Endpoints inside the consumed declaration or separator have no kept text range,
+      // so locate them through the read callout fields rather than falling past the container.
+      return point => point >= firstFieldStart && point <= firstFieldEnd
+        ? changed.locate(container + mapped.locate(mapped.input(point))) : changed.map(point);
+    });
     return { bindings: bindings.withBlocks(blocks),
       completed: completedPhrasing(tr.doc, container, container + tr.doc.nodeAt(container)!.nodeSize, retained) };
   }

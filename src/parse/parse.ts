@@ -48,12 +48,24 @@ export function parseNode(syntax: Syntax, content: Fragment | readonly Node[], s
 /** Front matter holds decoded YAML or a literal field, never Markdown. */
 export function parseFrontMatter(syntax: FrontMatterSyntax, schema: Schema, previous?: Node): Node {
   const built = new ParseContext('', schema).frontMatter(syntax);
-  const trailing = previous?.attrs.spelling?.trailingBlankLines;
-  if (trailing === undefined) return built;
-  return built.type.create(
-    { ...built.attrs, spelling: { ...built.attrs.spelling, trailingBlankLines: trailing } },
-    built.content,
-  );
+  const previousSpelling = previous?.type.isInGroup('frontMatter') ? previous.attrs.spelling : undefined;
+  if (!previousSpelling) return built;
+  const spelling = {
+    ...built.attrs.spelling,
+    ...(previousSpelling.leadingBlankLines !== undefined
+      ? { leadingBlankLines: previousSpelling.leadingBlankLines }
+      : null),
+    ...(previousSpelling.trailingBlankLines !== undefined
+      ? { trailingBlankLines: previousSpelling.trailingBlankLines }
+      : null),
+    ...(previousSpelling.fence !== undefined ? { fence: previousSpelling.fence } : null),
+  };
+  return built.type.create({ ...built.attrs, spelling }, built.content);
+}
+
+/** Read one YAML syntax node into its editor representation. */
+export function parseYAML(syntax: YAMLNodeSyntax, schema: Schema): Node {
+  return new ParseContext('', schema).yaml(syntax);
 }
 
 /** The source and schema shared by a syntax-to-document walk. */
@@ -77,6 +89,8 @@ class ParseContext {
     if (spelling !== undefined) attrs.spelling = spelling;
     if (syntax instanceof HeadingSyntax) {
       attrs.form = syntax instanceof ATXHeadingSyntax ? 'atx' : 'setext';
+    } else if (syntax instanceof YAMLMappingSyntax || syntax instanceof YAMLSequenceSyntax) {
+      attrs.flow = syntax.spelling.flow;
     } else if (syntax instanceof IndentedCodeBlockSyntax) {
       attrs.language = null;
       attrs.meta = null;

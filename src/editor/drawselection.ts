@@ -85,7 +85,17 @@ class TextSelectionPaint {
       if (native.isCollapsed) return null;
       const anchor = this.view.posAtDOM(native.anchorNode, native.anchorOffset);
       const head = this.view.posAtDOM(native.focusNode, native.focusOffset);
-      return anchor === head ? null : { from: Math.min(anchor, head), to: Math.max(anchor, head) };
+      if (anchor === head) return null;
+      const { doc } = this.view.state;
+      const $anchor = doc.resolve(anchor);
+      const $head = doc.resolve(head);
+      const created = this.view.someProp('createSelectionBetween', create => create(this.view, $anchor, $head));
+      if (created) {
+        return created instanceof TextSelection && !created.empty
+          ? { from: created.from, to: created.to }
+          : null;
+      }
+      return { from: Math.min(anchor, head), to: Math.max(anchor, head) };
     }
     return selection.empty ? null : { from: selection.from, to: selection.to };
   }
@@ -531,18 +541,35 @@ export class BlockSelectionPaint {
   }
   update() {
     const { selection, doc } = this.view.state;
+    const nodeSelectionDOM = selection instanceof NodeSelection ? this.view.nodeDOM(selection.from) : null;
+    const nodeSelectionView = nodeSelectionDOM ? nodeView(nodeSelectionDOM) : undefined;
+    // Focused boolean nodes render only their native control ring, whereas `BlockSelection` highlights flow capsules.
+    const isBooleanNodeSelection =
+      selection instanceof NodeSelection &&
+      selection.node.type.name === 'yamlScalar' &&
+      selection.node.attrs.tag === 'boolean';
+    const suppressNodeBox =
+      isBooleanNodeSelection ||
+      (selection instanceof NodeSelection && nodeSelectionView?.selectionTarget === null);
     const structural =
       this.view.dom.isConnected &&
+      !suppressNodeBox &&
       (selection instanceof BlockSelection || selection instanceof NodeSelection);
     const frontier = structural ? selectedBlocks(doc, selection) : [];
-    const targets = frontier.map((block) => ({ from: block.from, box: measureBlockBox(this.view, block) }));
-    if (structural && selection instanceof NodeSelection && !frontier.length) {
-      const dom = this.view.nodeDOM(selection.from);
-      const target = dom && nodeSelectionTarget(dom);
-      targets.push({ from: selection.from, box: target?.getBoundingClientRect() });
+    const targets = frontier.map((block) => {
+      const dom = this.view.nodeDOM(block.from);
+      const layout = dom && nodeView(dom);
+      const target = layout?.box ?? layout?.selectionTarget;
+      const element = target || undefined;
+      const box = measureBlockBox(this.view, block) ?? element?.getBoundingClientRect();
+      return { from: block.from, box, element };
+    });
+    if (structural && selection instanceof NodeSelection && !frontier.length && nodeSelectionDOM) {
+      const target = nodeSelectionTarget(nodeSelectionDOM) || undefined;
+      targets.push({ from: selection.from, box: target?.getBoundingClientRect(), element: target });
     }
     const remaining = new Set(this.masks.keys());
-    for (const { from, box } of targets) {
+    for (const { from, box, element } of targets) {
       if (!box || box.width <= 0 || box.height <= 0) continue;
       remaining.delete(from);
       let mask = this.masks.get(from);
@@ -553,6 +580,8 @@ export class BlockSelectionPaint {
         mask.setAttribute('aria-hidden', 'true');
         this.masks.set(from, mask);
       }
+      const radius = element ? element.ownerDocument.defaultView?.getComputedStyle(element).borderRadius : '';
+      mask.style.borderRadius = radius && radius !== '0px' ? radius : '';
       positionOverlay(this.host, mask, box);
     }
     for (const from of remaining) {
@@ -603,7 +632,9 @@ function sharedTextColumn(view: EditorView, from: number, to: number) {
 }
 
 /** A declared visible field takes precedence over ordinary schema DOM. */
-function nodeSelectionTarget(dom: DOMNode): HTMLElement | undefined {
+function nodeSelectionTarget(dom: DOMNode): HTMLElement | null | undefined {
   const view = nodeView(dom);
-  return view?.box ?? view?.selectionTarget ?? (dom.nodeType === 1 ? dom as HTMLElement : undefined);
+  if (view?.box) return view.box;
+  if (view && view.selectionTarget !== undefined) return view.selectionTarget;
+  return dom.nodeType === 1 ? dom as HTMLElement : undefined;
 }

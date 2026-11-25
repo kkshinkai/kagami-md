@@ -34,12 +34,10 @@ export function meaning(node: Node): Attrs {
     case types.table:
       return { alignments: attrs.alignments };
     case types.yamlScalar:
-      return { tag: attrs.tag, anchor: attrs.anchor };
+      return { tag: attrs.tag };
     case types.yamlMapping:
     case types.yamlSequence:
-      return { anchor: attrs.anchor };
-    case types.yamlAlias:
-      return { name: attrs.name };
+      return { flow: attrs.flow };
     default:
       return {};
   }

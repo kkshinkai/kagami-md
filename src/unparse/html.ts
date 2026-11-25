@@ -16,6 +16,7 @@ import {
 import { schema } from '../types/schema.js';
 import { annotatedBlockKinds, readFragmentAnnotations, treeAttribute } from '../types/annotations.js';
 import { defaultUnparseOptions, unparseAlone, unparseSlice } from './unparse.js';
+import { hasYAMLNodes, renderYAMLFragmentForHTML } from './yamltransfer.js';
 
 const defaultParser = new Parser({ target: 'editor' });
 
@@ -64,8 +65,10 @@ export class HTMLSerializer extends DOMSerializer {
     const output = target ?? document.createDocumentFragment();
     const parser = this.parser();
     const context = new SerializeContext(this, document, parser, this.document?.());
-    context.fragment(fragment, output);
-    if (fragment.firstChild?.isBlock && output.firstChild?.nodeType === 1 && validFragmentTree(fragment)) {
+    const rendered = renderYAMLFragmentForHTML(fragment);
+    context.fragment(rendered, output);
+    if (fragment.childCount > 0 && output.firstChild?.nodeType === 1 &&
+        (fragment.firstChild!.isBlock || hasYAMLNodes(fragment)) && validFragmentTree(fragment)) {
       (output.firstChild as HTMLElement).setAttribute(
         treeAttribute, JSON.stringify(selectedTree(fragment, parser).toJSON()),
       );
@@ -154,6 +157,13 @@ class SerializeContext {
   }
 
   block(node: Node, output: HTMLElement | DocumentFragment, owner?: Node, tight?: boolean): void {
+    if (node.type === schema.nodes.yamlFrontMatter) {
+      const converted = renderYAMLFragmentForHTML(Fragment.from(node)).firstChild;
+      if (converted && converted.type !== schema.nodes.yamlFrontMatter) {
+        this.block(converted, output, owner, tight);
+      }
+      return;
+    }
     if (node.type === schema.nodes.htmlTagBlock) {
       const element = this.dom.createElement(node.attrs.tag === 'htmlImage' ? 'img' : 'br');
       if (node.attrs.tag === 'htmlImage') {

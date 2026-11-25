@@ -19,7 +19,7 @@ import { update } from '../transform/transform.js';
 import { activePending, leftLine, normalizeLines, setContent } from './field.js';
 import { composing, compositionCommit, compositionState, focusKey } from './input.js';
 import { normalizationKey } from './normalization.js';
-import { correctFrontmatter } from '../schema/frontmatter.js';
+import { correctFrontmatter, normalizeFrontmatterSelection } from '../schema/frontmatter.js';
 import { correctHTML } from '../schema/html.js';
 import { correctList } from '../schema/list.js';
 import { correctCallout } from '../schema/callout.js';
@@ -64,6 +64,7 @@ export function correction(): Plugin {
         if (tr.steps.length === start) break;
         fields = fields.next(doc, start);
       }
+      if (!replay) settled = normalizeFrontmatterSelection(tr) || settled;
       return tr.steps.length || tr.getMeta(phrasingKey) || tr.getMeta(focusKey) ||
         settled ? tr : null;
     },

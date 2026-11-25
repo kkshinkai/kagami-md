@@ -7,7 +7,7 @@
 
 import { BindingState } from '../state/bindings.js';
 import { Fragment, Slice, type Node, type NodeType } from 'prosemirror-model';
-import { ReplaceAroundStep, type Transform } from 'prosemirror-transform';
+import { ReplaceAroundStep, type Mappable, type Transform } from 'prosemirror-transform';
 import { editorSpelling, editorType } from '../parse/tree.js';
 import { combine, reshaped } from './classes.js';
 import { adoptContent, changedSpelling, mergeAdjacent } from './frames.js';
@@ -57,12 +57,29 @@ export function reshapeBlocks(tr: Transform, from: number, to: number, shapes: r
   const joinMap = tr.mapping.slice(joining);
   return {
     map(position) {
-      const range = context.kept.find(range => position >= from + range.before.from &&
-        position <= from + range.before.to);
-      return joinMap.map(range ? range.after.from + position - range.before.from : replacementMap.map(position));
+      return joinMap.map(mapReshapedPosition(position, from, to, replacement.size, context.kept, replacementMap));
     },
     locate: position => joinMap.map(position),
   };
+}
+
+/** Map `position` monotonically across `[from, to]`, keeping unkept interior positions ordered around `kept`. */
+function mapReshapedPosition(
+  position: number,
+  from: number,
+  to: number,
+  replacementSize: number,
+  kept: readonly KeptText[],
+  replacementMap: Mappable,
+): number {
+  if (position < from || position >= to) return replacementMap.map(position);
+  const range = kept.find(entry => position >= from + entry.before.from && position <= from + entry.before.to);
+  if (range) return range.after.from + position - range.before.from;
+  if (position === from) return from;
+  const next = kept.find(entry => position < from + entry.before.from);
+  if (next) return from + next.after.from;
+  const last = kept.at(-1);
+  return last ? from + last.after.to : from + Math.min(1, replacementSize);
 }
 
 function prepareLiterals(tr: Transform, shapes: readonly Shape[]): void {

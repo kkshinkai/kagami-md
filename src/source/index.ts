@@ -6,5 +6,5 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 export { Source, read, readSyntax } from './source.js';
-export type { RetainedBlock, RetainedList } from './retained.js';
+export { RetainedList, type RetainedBlock } from './retained.js';
 export type { EditorLoc, SourceLoc } from './location.js';

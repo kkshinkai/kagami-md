@@ -1,5 +1,5 @@
 diff --git a/dist/index.cjs b/dist/index.cjs
-index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d5603bb12 100644
+index d52a5260a7b9924b2865053ea1e8c6484225277b..45b48d7912ddb75b4333f333950ac4a4f479e323 100644
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
 @@ -2979,7 +2979,9 @@ function initInput(view) {
@@ -37,7 +37,18 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
  function setSelectionOrigin(view, origin) {
    view.input.lastSelectionOrigin = origin;
    view.input.lastSelectionTime = Date.now();
-@@ -3206,6 +3225,12 @@ handlers.mousedown = function (view, _event) {
+@@ -3188,7 +3207,9 @@ handlers.mousedown = function (view, _event) {
+   var now = Date.now(),
+     type = "singleClick";
+   if (now - view.input.lastClick.time < 500 && isNear(event, view.input.lastClick) && !event[selectNodeModifier] && view.input.lastClick.button == event.button) {
+-    if (view.input.lastClick.type == "singleClick") type = "doubleClick";else if (view.input.lastClick.type == "doubleClick") type = "tripleClick";
++    if (view.input.lastClick.type == "singleClick") type = "doubleClick";else if (view.input.lastClick.type == "doubleClick" || view.input.lastClick.type == "tripleClick") type = "tripleClick";
++  } else if (event.button == 0 && !event[selectNodeModifier] && event.detail >= 3) {
++    type = "tripleClick";
+   }
+   view.input.lastClick = {
+     time: now,
+@@ -3206,6 +3227,12 @@ handlers.mousedown = function (view, _event) {
      event.preventDefault();
    } else {
      setSelectionOrigin(view, "pointer");
@@ -50,7 +61,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
    }
  };
  var MouseDown = function () {
-@@ -3232,6 +3257,9 @@ var MouseDown = function () {
+@@ -3232,6 +3259,9 @@ var MouseDown = function () {
        this.view.root.removeEventListener("mouseup", this.up);
        this.view.root.removeEventListener("mousemove", this.move);
        if (this.view.input.mouseDown == this) this.view.input.mouseDown = null;
@@ -60,7 +71,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
      }
    }, {
      key: "delaySelUpdate",
-@@ -3682,6 +3710,9 @@ handlers.focus = function (view) {
+@@ -3682,6 +3712,9 @@ handlers.focus = function (view) {
      view.domObserver.start();
      view.focused = true;
      setTimeout(function () {
@@ -70,7 +81,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
        if (view.docView && view.hasFocus() && !view.domObserver.currentSelection.eq(view.domSelectionRange())) selectionToDOM(view);
      }, 20);
    }
-@@ -4350,6 +4381,7 @@ var DOMObserver = function () {
+@@ -4350,6 +4383,7 @@ var DOMObserver = function () {
      this.flushingSoon = -1;
      this.observer = null;
      this.currentSelection = new SelectionState();
@@ -78,7 +89,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
      this.onCharData = null;
      this.suppressingSelectionUpdates = false;
      this.lastChangedTextNode = null;
-@@ -4428,12 +4460,13 @@ var DOMObserver = function () {
+@@ -4428,12 +4462,13 @@ var DOMObserver = function () {
    }, {
      key: "connectSelection",
      value: function connectSelection() {
@@ -94,7 +105,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
      }
    }, {
      key: "suppressSelectionUpdates",
-@@ -5337,6 +5370,12 @@ var EditorView = function () {
+@@ -5337,6 +5372,12 @@ var EditorView = function () {
      key: "updateRoot",
      value: function updateRoot() {
        this._root = null;
@@ -108,7 +119,7 @@ index d52a5260a7b9924b2865053ea1e8c6484225277b..75fcca32ec8d0ed8f01e03de532a199d
    }, {
      key: "posAtCoords",
 diff --git a/dist/index.js b/dist/index.js
-index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3cf19e95e1 100644
+index dc0d117b85e1da3eae915b4d8ff8e5e604683861..7f2c4e92c0063e878f3a4bbcf6300360ba816763 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -3152,8 +3152,11 @@ function initInput(view) {
@@ -145,7 +156,21 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
  function setSelectionOrigin(view, origin) {
      view.input.lastSelectionOrigin = origin;
      view.input.lastSelectionTime = Date.now();
-@@ -3394,6 +3410,8 @@ handlers.mousedown = (view, _event) => {
+@@ -3377,9 +3393,12 @@ handlers.mousedown = (view, _event) => {
+         view.input.lastClick.button == event.button) {
+         if (view.input.lastClick.type == "singleClick")
+             type = "doubleClick";
+-        else if (view.input.lastClick.type == "doubleClick")
++        else if (view.input.lastClick.type == "doubleClick" || view.input.lastClick.type == "tripleClick")
+             type = "tripleClick";
+     }
++    else if (event.button == 0 && !event[selectNodeModifier] && event.detail >= 3) {
++        type = "tripleClick";
++    }
+     view.input.lastClick = { time: now, x: event.clientX, y: event.clientY, type, button: event.button };
+     if (view.input.mouseDown)
+         view.input.mouseDown.done();
+@@ -3394,6 +3413,8 @@ handlers.mousedown = (view, _event) => {
      }
      else {
          setSelectionOrigin(view, "pointer");
@@ -154,7 +179,7 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
      }
  };
  class MouseDown {
-@@ -3415,6 +3433,9 @@ class MouseDown {
+@@ -3415,6 +3436,9 @@ class MouseDown {
          this.view.root.removeEventListener("mousemove", this.move);
          if (this.view.input.mouseDown == this)
              this.view.input.mouseDown = null;
@@ -164,7 +189,7 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
      }
      delaySelUpdate() { return false; }
  }
-@@ -3928,6 +3949,10 @@ handlers.focus = view => {
+@@ -3928,6 +3952,10 @@ handlers.focus = view => {
          view.domObserver.start();
          view.focused = true;
          setTimeout(() => {
@@ -175,7 +200,7 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
              if (view.docView && view.hasFocus() && !view.domObserver.currentSelection.eq(view.domSelectionRange()))
                  selectionToDOM(view);
          }, 20);
-@@ -4692,6 +4717,7 @@ class DOMObserver {
+@@ -4692,6 +4720,7 @@ class DOMObserver {
          this.flushingSoon = -1;
          this.observer = null;
          this.currentSelection = new SelectionState;
@@ -183,7 +208,7 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
          this.onCharData = null;
          this.suppressingSelectionUpdates = false;
          this.lastChangedTextNode = null;
-@@ -4761,10 +4787,12 @@ class DOMObserver {
+@@ -4761,10 +4790,12 @@ class DOMObserver {
          this.disconnectSelection();
      }
      connectSelection() {
@@ -198,7 +223,7 @@ index dc0d117b85e1da3eae915b4d8ff8e5e604683861..d9c9f4f892d32968b5c9848bc2fb4d3c
      }
      suppressSelectionUpdates() {
          this.suppressingSelectionUpdates = true;
-@@ -5782,6 +5810,12 @@ class EditorView {
+@@ -5782,6 +5813,12 @@ class EditorView {
      */
      updateRoot() {
          this._root = null;
@@ -251,7 +276,7 @@ index 7d4205736a5533b8c22b2ce9a8ea719f8f52f143..fbe10df67329af410c30b73af15aa1a0
  
    /// Given a pair of viewport coordinates, return the document
 diff --git a/src/input.ts b/src/input.ts
-index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..ac3b7625cb40d436f99634313ebe3fe97ced5a76 100644
+index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..e990d2b26a58b8eacff67ad86ee8568f8a1b5546 100644
 --- a/src/input.ts
 +++ b/src/input.ts
 @@ -47,8 +47,9 @@ export function initInput(view: EditorView) {
@@ -285,7 +310,18 @@ index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..ac3b7625cb40d436f99634313ebe3fe9
  function setSelectionOrigin(view: EditorView, origin: string) {
    view.input.lastSelectionOrigin = origin
    view.input.lastSelectionTime = Date.now()
-@@ -300,6 +313,8 @@ handlers.mousedown = (view, _event) => {
+@@ -285,7 +298,9 @@ handlers.mousedown = (view, _event) => {
+   if (now - view.input.lastClick.time < 500 && isNear(event, view.input.lastClick) && !event[selectNodeModifier] &&
+       view.input.lastClick.button == event.button) {
+     if (view.input.lastClick.type == "singleClick") type = "doubleClick"
+-    else if (view.input.lastClick.type == "doubleClick") type = "tripleClick"
++    else if (view.input.lastClick.type == "doubleClick" || view.input.lastClick.type == "tripleClick") type = "tripleClick"
++  } else if (event.button == 0 && !event[selectNodeModifier] && event.detail >= 3) {
++    type = "tripleClick"
+   }
+   view.input.lastClick = {time: now, x: event.clientX, y: event.clientY, type, button: event.button}
+ 
+@@ -300,6 +315,8 @@ handlers.mousedown = (view, _event) => {
      event.preventDefault()
    } else {
      setSelectionOrigin(view, "pointer")
@@ -294,7 +330,7 @@ index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..ac3b7625cb40d436f99634313ebe3fe9
    }
  }
  
-@@ -324,6 +339,9 @@ abstract class MouseDown {
+@@ -324,6 +341,9 @@ abstract class MouseDown {
      this.view.root.removeEventListener("mouseup", this.up as any)
      this.view.root.removeEventListener("mousemove", this.move as any)
      if (this.view.input.mouseDown == this) this.view.input.mouseDown = null
@@ -304,7 +340,7 @@ index b385cc19d572f49ce00b3335c9a5c9b35da3fab5..ac3b7625cb40d436f99634313ebe3fe9
    }
  
    delaySelUpdate() { return false }
-@@ -840,6 +858,9 @@ handlers.focus = view => {
+@@ -840,6 +860,9 @@ handlers.focus = view => {
      view.domObserver.start()
      view.focused = true
      setTimeout(() => {

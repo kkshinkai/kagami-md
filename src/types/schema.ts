@@ -95,10 +95,11 @@ const nodes = {
 
   /** An ordered collection of YAML properties. */
   yamlMapping: {
-    group: 'yamlNode yamlCollection', content: 'yamlPair*', attrs: { spelling },
+    group: 'yamlNode yamlCollection', content: 'yamlPair*',
+    attrs: { spelling, flow: { default: false, validate: 'boolean' } },
     defining: true, isolating: true, selectable: false,
-    parseDOM: [{ tag: '.md-yaml-map' }],
-    toDOM() { return ['div', { class: 'md-yaml-map' }, 0]; },
+    parseDOM: [{ tag: '.md-yaml-map', getAttrs(dom) { return { flow: dom.getAttribute('data-flow') === 'true' }; } }],
+    toDOM(node) { return ['div', { class: 'md-yaml-map', 'data-flow': String(node.attrs.flow) }, 0]; },
   } as NodeSpec,
 
   /** A YAML property contains its key followed by its value. */
@@ -110,15 +111,16 @@ const nodes = {
 
   /** An ordered sequence of YAML values. */
   yamlSequence: {
-    group: 'yamlNode yamlCollection', content: 'yamlNode*', attrs: { spelling },
+    group: 'yamlNode yamlCollection', content: 'yamlNode*',
+    attrs: { spelling, flow: { default: false, validate: 'boolean' } },
     defining: true, isolating: true, selectable: false,
-    parseDOM: [{ tag: '.md-yaml-array' }],
-    toDOM() { return ['div', { class: 'md-yaml-array' }, 0]; },
+    parseDOM: [{ tag: '.md-yaml-array', getAttrs(dom) { return { flow: dom.getAttribute('data-flow') === 'true' }; } }],
+    toDOM(node) { return ['div', { class: 'md-yaml-array', 'data-flow': String(node.attrs.flow) }, 0]; },
   } as NodeSpec,
 
   /** A decoded scalar; its tag identifies the YAML value represented by its text. */
   yamlScalar: {
-    group: 'yamlNode', content: 'text*', marks: '', code: true, defining: true, isolating: true,
+    group: 'yamlNode', content: 'text*', marks: '', whitespace: 'pre', defining: true, isolating: true,
     attrs: { spelling, tag: { default: 'string', validate: 'string' } },
     parseDOM: [{ tag: '.md-yaml-scalar', preserveWhitespace: 'full',
       getAttrs(dom) { return { tag: dom.getAttribute('data-yaml-tag') ?? 'string' }; } }],

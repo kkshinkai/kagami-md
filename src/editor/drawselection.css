@@ -49,8 +49,7 @@
   pointer-events: none;
 }
 /* The structural overlay owns node highlighting once a measured target is painted. */
-.markdown-editor .md-drawn-node-selection .ProseMirror-selectednode,
-.markdown-editor .md-drawn-node-selection .ProseMirror-selectednode .md-yaml-boolean-control {
+.markdown-editor .md-drawn-node-selection .ProseMirror-selectednode {
   outline: none;
 }
 .markdown-editor .md-drawn-node-selection li.ProseMirror-selectednode::after {

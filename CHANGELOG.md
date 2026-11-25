@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.0-alpha.5
+
+- Redesign YAML front matter around inline flow capsules, indexed block sequences, structured selection and editing, and YAML code block transfer.
+- Fix inline delimiter flicker on double-click.
+
 ## 0.0.0-alpha.4
 
 - Splice and reread surviving source when deleting or typing over a selection across structured block or field boundaries.

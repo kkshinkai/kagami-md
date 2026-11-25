@@ -5,12 +5,14 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { Fragment, Slice, type Node, type ResolvedPos } from 'prosemirror-model';
+import { Fragment, Slice, type Node, type ResolvedPos, type Schema } from 'prosemirror-model';
 import { Selection, TextSelection, type SelectionBookmark, type Transaction } from 'prosemirror-state';
 import type { Mappable } from 'prosemirror-transform';
 import { insert, remove, replace, type PositionMapping, type Shape } from '../transform/transform.js';
 import { schema } from '../types/schema.js';
+import { adaptToYAMLTarget, isYAMLCodeBlock, isYAMLTransferNode } from '../unparse/yamltransfer.js';
 import { meaning } from './meaning.js';
+import { defaultParser } from './parser.js';
 
 /** An interval of complete blocks in the document. */
 export interface BlockRange {
@@ -24,6 +26,7 @@ export interface SelectableBlock extends BlockRange {
   readonly parent: SelectableBlock | null;
   readonly depth: number;
   readonly children: SelectableBlock[];
+  readonly sequence: BlockRange | null;
 }
 
 /** Keep text selection endpoints on their authored text while a structural operation runs. */
@@ -51,7 +54,8 @@ export class BlockSelection extends Selection {
     }
     const blocks = selectedBlocks(doc, this);
     const first = (this.anchor < this.head ? blocks[0] : blocks.at(-1))!;
-    this.anchorBlock = anchorBlock ?? { from: first.from, to: first.to };
+    // Strip parent/children pointers from `SelectableBlock` inputs so selection state serializes as plain JSON.
+    this.anchorBlock = anchorBlock ? { from: anchorBlock.from, to: anchorBlock.to } : { from: first.from, to: first.to };
   }
 
   override eq(other: Selection): boolean {
@@ -67,9 +71,7 @@ export class BlockSelection extends Selection {
    * ancestor. Extending back toward it must shrink the range instead of unioning the old range.
    * This anchor belongs to the native selection/bookmark, not an out-of-band pointer store. */
   extend(block: BlockRange): BlockSelection {
-    const { from, to } = commonBlockRange(this.$from.doc, this.anchorBlock, block);
-    const forward = block.from >= this.anchorBlock.from;
-    return BlockSelection.create(this.$from.doc, forward ? from : to, forward ? to : from, this.anchorBlock);
+    return BlockSelection.between(this.$from.doc, this.anchorBlock, block);
   }
 
   override content(): Slice {
@@ -79,29 +81,42 @@ export class BlockSelection extends Selection {
   }
 
   override replace(tr: Transaction, content = Slice.empty): void {
-    const { from, to } = blockStorageRange(tr.doc, this);
+    const range = blockStorageRange(tr.doc, this);
     if (!content.size) {
-      remove(tr, from, to);
+      const seam = remove(tr, range.from, range.to);
+      tr.setSelection(Selection.near(tr.doc.resolve(seam)));
       return;
     }
-    if (content.openStart || content.openEnd) {
+    let target = replacementTargetRange(tr.doc, this, content);
+    const first = tr.doc.firstChild;
+    // Removing a leading `frontMatter` shell first lets blocks insert at offset 0 (since `frontMatter? block+`
+    // rejects body blocks before `frontMatter`), while preserving trailing body content when only part is replaced.
+    if (target.from === 0 && first?.type.isInGroup('frontMatter') && target.to >= first.nodeSize) {
+      const beforeDocSize = tr.doc.content.size;
+      remove(tr, 0, first.nodeSize);
+      const remainingTo = Math.max(0, tr.doc.content.size - (beforeDocSize - target.to));
+      target = { from: 0, to: remainingTo };
+    }
+    if (content.openStart > 0 || content.openEnd > 0) {
       const start = tr.steps.length;
-      replace(tr, from, to, content);
-      tr.setSelection(Selection.near(tr.doc.resolve(tr.mapping.slice(start).map(to, -1)), -1));
+      replace(tr, target.from, target.to, content);
+      tr.setSelection(Selection.near(tr.doc.resolve(tr.mapping.slice(start).map(target.to, -1)), -1));
       return;
     }
-    let size = 0;
-    if (content.content.content.every(node => node.isInline)) {
-      insert(tr, from, tr.doc.type.schema.nodes.paragraph, {}, content.content);
-      size = content.content.size + 2;
-    } else {
-      for (const node of content.content.content) {
-        insert(tr, from + size, node.type, meaning(node), node.content);
-        size += node.nodeSize;
-      }
+    const inline = content.content.content.every(node => node.isInline);
+    const insertParent = tr.doc.resolve(target.from).parent;
+    const beforeSize = tr.doc.content.size;
+    const caretAfter = insertReplacementContent(tr, target.from, insertParent, content, inline);
+    const size = tr.doc.content.size - beforeSize;
+    if (target.to > target.from) {
+      remove(tr, target.from + size, target.to + size);
     }
-    remove(tr, from + size, to + size);
-    tr.setSelection(Selection.near(tr.doc.resolve(from + size - 1), -1));
+    if (caretAfter !== null) {
+      tr.setSelection(TextSelection.create(tr.doc, Math.min(caretAfter, tr.doc.content.size)));
+    } else {
+      const endPos = Math.max(0, Math.min(tr.doc.content.size, target.from + size - 1));
+      tr.setSelection(Selection.near(tr.doc.resolve(endPos), -1));
+    }
   }
 
   override replaceWith(tr: Transaction, node: Node): void {
@@ -118,11 +133,121 @@ export class BlockSelection extends Selection {
     return BlockSelection.create(doc, value.anchor, value.head, value.anchorBlock);
   }
 
+  static between(doc: Node, anchorBlock: BlockRange, headBlock: BlockRange): BlockSelection {
+    const { from, to } = commonBlockRange(doc, anchorBlock, headBlock);
+    const forward = headBlock.from >= anchorBlock.from;
+    return BlockSelection.create(doc, forward ? from : to, forward ? to : from, anchorBlock);
+  }
+
   static create(doc: Node, anchor: number, head: number, anchorBlock?: BlockRange): BlockSelection {
     if (!isBlockRange(doc, Math.min(anchor, head), Math.max(anchor, head)))
       throw new RangeError('Invalid block selection');
     return new BlockSelection(doc.resolve(anchor), doc.resolve(head), anchorBlock);
   }
+}
+
+/**
+ * Choose whether replacing `selection` writes inside its YAML container or expands across
+ * removable outer shells (`blockStorageRange`). Open slices inside `yamlFrontMatter` and closed
+ * inline/YAML slices inside a `yamlCollection` stay within the collection so replacing all entries
+ * does not destroy the enclosing frontmatter shell, whereas body blocks replace it.
+ */
+function replacementTargetRange(doc: Node, selection: BlockSelection, content: Slice): BlockRange {
+  const storageRange = blockStorageRange(doc, selection);
+  const { $from, $to } = selection;
+  if (content.openStart > 0 || content.openEnd > 0) {
+    const inYAMLSubtree =
+      $from.depth >= 2 && $to.pos <= $from.end(1) && $from.node(1).type === schema.nodes.yamlFrontMatter;
+    return inYAMLSubtree ? { from: selection.from, to: selection.to } : storageRange;
+  }
+  const inYAMLCollection = $from.parent.type.isInGroup('yamlCollection') && $to.parent === $from.parent;
+  if (!inYAMLCollection) return storageRange;
+  const nodes = content.content.content;
+  const inline = nodes.every(node => node.isInline);
+  const yamlCompatible = nodes.every(node => isYAMLTransferNode(node) || isYAMLCodeBlock(node));
+  if (inline || yamlCompatible) return { from: selection.from, to: selection.to };
+  return storageRange;
+}
+
+/** Insert `content` at `targetFrom` inside `insertParent`, returning the caret position inside a created YAML scalar or `null`. */
+function insertReplacementContent(
+  tr: Transaction,
+  targetFrom: number,
+  insertParent: Node,
+  content: Slice,
+  inline: boolean,
+): number | null {
+  const trSchema = tr.doc.type.schema;
+  const { yamlMapping, yamlPair, yamlScalar, yamlSequence } = trSchema.nodes;
+  if (inline) {
+    if (insertParent.type === yamlMapping) {
+      const key = yamlScalar.create({ tag: 'string' }, content.content);
+      const value = yamlScalar.create({ tag: 'string' });
+      insert(tr, targetFrom, yamlPair, {}, Fragment.fromArray([key, value]));
+      const found = Selection.findFrom(tr.doc.resolve(targetFrom), 1, true);
+      return found ? found.$from.end() : null;
+    }
+    if (insertParent.type === yamlSequence) {
+      insert(tr, targetFrom, yamlScalar, { tag: 'string' }, content.content);
+      const found = Selection.findFrom(tr.doc.resolve(targetFrom), 1, true);
+      return found ? found.$from.end() : null;
+    }
+    if (insertParent.type.isInGroup('list')) {
+      const paragraph = trSchema.nodes.paragraph.create(null, paragraphInlineContent(content.content, trSchema));
+      insert(tr, targetFrom, trSchema.nodes.listItem, { checked: null }, Fragment.from(paragraph));
+      return targetFrom + 2 + paragraph.content.size;
+    }
+    insert(tr, targetFrom, trSchema.nodes.paragraph, {}, paragraphInlineContent(content.content, trSchema));
+    return null;
+  }
+  const beforeSize = tr.doc.content.size;
+  for (const node of content.content.content) {
+    const pos = targetFrom + (tr.doc.content.size - beforeSize);
+    insertReplacementNode(tr, pos, insertParent, node, trSchema);
+  }
+  return null;
+}
+
+/** Insert one block node at `pos`, adapting foreign blocks when `insertParent` is a YAML collection or list. */
+function insertReplacementNode(
+  tr: Transaction,
+  pos: number,
+  insertParent: Node,
+  node: Node,
+  trSchema: Schema,
+): void {
+  const { listItem, yamlMapping, yamlPair, yamlSequence } = trSchema.nodes;
+  if (insertParent.type === yamlMapping || insertParent.type === yamlSequence) {
+    // Already compatible YAML entries keep their own explicit tag and quote spelling instead of copying neighbor frames.
+    const compatible =
+      (insertParent.type === yamlMapping && node.type === yamlPair) ||
+      (insertParent.type === yamlSequence && node.type.isInGroup('yamlNode'));
+    if (compatible) {
+      replace(tr, pos, pos, new Slice(Fragment.from(node), 0, 0));
+      return;
+    }
+    const target = insertParent.type === yamlSequence ? 'sequence' : 'mapping';
+    const adapted = adaptToYAMLTarget([node], target, trSchema, { parser: defaultParser });
+    if (adapted.nodes.length > 0) {
+      replace(tr, pos, pos, new Slice(Fragment.fromArray(adapted.nodes), 0, 0));
+    }
+    return;
+  }
+  if (insertParent.type.isInGroup('list')) {
+    if (node.type === listItem) {
+      insert(tr, pos, listItem, meaning(node), node.content);
+    } else if (node.type.isInGroup('list')) {
+      let current = pos;
+      for (const child of node.content.content) {
+        insert(tr, current, child.type, meaning(child), child.content);
+        current += tr.doc.nodeAt(current)?.nodeSize ?? child.nodeSize;
+      }
+    } else if (listItem.validContent(Fragment.from(node))) {
+      insert(tr, pos, listItem, { checked: null }, Fragment.from(node));
+    }
+    return;
+  }
+  insert(tr, pos, node.type, meaning(node), node.content);
 }
 
 export namespace BlockSelection {
@@ -138,6 +263,7 @@ export namespace BlockSelection {
 BlockSelection.prototype.visible = false;
 Selection.jsonID('block', BlockSelection);
 
+/** Mappable bookmark preserving a block selection's endpoints and initial anchor block. */
 class BlockBookmark implements SelectionBookmark {
   constructor(readonly anchor: number, readonly head: number, readonly anchorBlock: BlockRange) {}
 
@@ -168,17 +294,44 @@ function isSelectable(node: Node, sequenceMember: boolean): boolean {
     type === schema.nodes.rawFrontMatter || type === schema.nodes.yamlPair);
 }
 
+/** Position span of child blocks owned by `node` between `[from, to]`, or `null` for leaf blocks. */
+function childSequenceRange(node: Node, from: number, to: number): BlockRange | null {
+  if (node.type === schema.nodes.yamlPair) {
+    const value = node.child(1);
+    if (!value.type.isInGroup('yamlCollection')) return null;
+    const valueFrom = from + 1 + node.child(0).nodeSize;
+    return { from: valueFrom + 1, to: valueFrom + value.nodeSize - 1 };
+  }
+  if (node.type.isInGroup('yamlCollection')) {
+    return { from: from + 1, to: to - 1 };
+  }
+  if (node.type.isInGroup('container')) {
+    let start = from + 1;
+    for (let index = 0; index < node.childCount; index++) {
+      const child = node.child(index);
+      if (child.type.isInGroup('block')) break;
+      start += child.nodeSize;
+    }
+    return { from: start, to: to - 1 };
+  }
+  return null;
+}
+
 /** List and frontmatter shells contribute neither an owner nor a depth: their entries join
  * the enclosing interaction sequence in source order. Fixed
  * fields remain part of their owner; first paragraphs retain their own Markdown identity. */
-export function selectableBlocks(doc: Node): SelectableBlock[] {
-  return new BlockTree(doc).blocks;
+export function selectableBlocks(doc: Node, range?: BlockRange): SelectableBlock[] {
+  return range ? new BlockTree(doc, range.from, range.to).blocks : new BlockTree(doc).blocks;
 }
 
+/** Flattened and parent-linked interaction tree over all selectable blocks intersecting `[from, to]`. */
 class BlockTree {
   readonly blocks: SelectableBlock[] = [];
-  constructor(doc: Node) {
-    doc.forEach((node, from) => this.read(node, from, null, false));
+  constructor(doc: Node, from = 0, to = doc.content.size) {
+    doc.forEach((node, offset) => {
+      if (offset + node.nodeSize <= from || offset >= to) return;
+      this.read(node, offset, null, false);
+    });
   }
 
   read(node: Node, from: number, parent: SelectableBlock | null, sequenceMember: boolean): void {
@@ -189,13 +342,16 @@ class BlockTree {
         type === schema.nodes.yamlSequence)) {
       this.children(node, from, parent);
     } else if (isSelectable(node, sequenceMember)) {
+      const to = from + node.nodeSize;
+      const sequence = childSequenceRange(node, from, to);
       const block: SelectableBlock = {
-        node, from, to: from + node.nodeSize, parent, depth: parent ? parent.depth + 1 : 0, children: []
+        node, from, to, parent, depth: parent ? parent.depth + 1 : 0, children: [], sequence,
       };
       this.blocks.push(block);
       parent?.children.push(block);
-      if (type.isInGroup('container') || type.isInGroup('yamlCollection') || type === schema.nodes.yamlPair)
+      if (sequence || (type === schema.nodes.yamlPair && node.child(0).type.isInGroup('yamlCollection'))) {
         this.children(node, from, block);
+      }
     }
   }
 
@@ -227,16 +383,27 @@ class BlockTree {
  * storage ranges introduce no selectable owner, handle, highlight or indentation level. */
 export function rootBlockSequences(doc: Node): BlockRange[] {
   const first = doc.firstChild;
-  return first?.type === schema.nodes.yamlFrontMatter
-    ? [{ from: 2, to: first.nodeSize - 2 },
-      { from: first.nodeSize, to: doc.content.size }] : [{ from: 0, to: doc.content.size }];
+  if (first?.type !== schema.nodes.yamlFrontMatter) {
+    return [{ from: 0, to: doc.content.size }];
+  }
+  let innerStart = 0;
+  let shell: Node = first;
+  while (shell.childCount === 1 && !isSelectable(shell.firstChild!, false)) {
+    innerStart += 1;
+    shell = shell.firstChild!;
+  }
+  innerStart += 1;
+  return [
+    { from: innerStart, to: innerStart + shell.content.size },
+    { from: first.nodeSize, to: doc.content.size },
+  ];
 }
 
 /** Native selection intervals can cross transparent list boundaries. Their visible
  * frontier consists only of maximal interaction blocks; a carrier never gets its own selection
  * decoration, handle or drag identity. This also covers ranges crossing different list shells. */
 export function selectedBlocks(doc: Node, range: BlockRange): SelectableBlock[] {
-  return new BlockTree(doc).frontier(range);
+  return new BlockTree(doc, range.from, range.to).frontier(range);
 }
 
 /** Resolve arbitrary text/field positions through the same ownership tree used by handles and
@@ -251,12 +418,40 @@ export function blockAtPosition(blocks: readonly SelectableBlock[], pos: number,
   return found;
 }
 
+/** Replace literal newlines in inline text nodes with `lineEnding` nodes for body paragraph insertion. */
+function paragraphInlineContent(content: Fragment, trSchema: Schema): Fragment {
+  const nodes: Node[] = [];
+  content.forEach(node => {
+    if (!node.isText || !node.text?.includes('\n')) {
+      nodes.push(node);
+      return;
+    }
+    const parts = node.text.split('\n');
+    for (let index = 0; index < parts.length; index++) {
+      if (index > 0) nodes.push(trSchema.nodes.lineEnding.create());
+      if (parts[index]) nodes.push(trSchema.text(parts[index]!, node.marks));
+    }
+  });
+  return Fragment.fromArray(nodes);
+}
+
 /** Expand endpoints to their lowest common interaction parent. A nested child-to-uncle range
  * owns the containing item, but crossing from the last item to a root paragraph does not own
  * earlier items merely because Markdown stores them in the same UL. Physical endpoints may
  * therefore cross transparent carrier boundaries while retaining complete semantic blocks. */
 export function commonBlockRange(doc: Node, first: BlockRange, last: BlockRange): BlockRange {
-  return new BlockTree(doc).common(first, last);
+  const from = Math.min(first.from, last.from);
+  const to = Math.max(first.to, last.to);
+  return new BlockTree(doc, from, to).common(first, last);
+}
+
+/** Whether a container is a transparent list or frontmatter shell removed when all children leave. */
+function isRemovableShell($pos: ResolvedPos): boolean {
+  const parent = $pos.parent;
+  if (parent.type.isInGroup('list')) return true;
+  if ($pos.depth === 1 && parent.type === schema.nodes.yamlFrontMatter) return true;
+  return $pos.depth === 2 && parent.type === schema.nodes.yamlMapping &&
+    $pos.node(1).type === schema.nodes.yamlFrontMatter;
 }
 
 /** Native replacement must include a carrier's tokens exactly when all its items are selected.
@@ -267,12 +462,13 @@ export function blockStorageRange(doc: Node, range: BlockRange): BlockRange {
   let { from, to } = range;
   for (;;) {
     const at = doc.resolve(from);
-    if (!at.parent.type.isInGroup('list') || at.parentOffset !== 0 || to < at.end()) break;
+    if (!isRemovableShell(at) || at.parentOffset !== 0 || to < at.end()) break;
     from = at.before();
+    if (to === at.end()) to = at.after();
   }
   for (;;) {
     const at = doc.resolve(to);
-    if (!at.parent.type.isInGroup('list') || at.parentOffset !== at.parent.content.size || from > at.start()) break;
+    if (!isRemovableShell(at) || at.parentOffset !== at.parent.content.size || from > at.start()) break;
     to = at.after();
   }
   return { from, to };

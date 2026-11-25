@@ -5,23 +5,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import {
-  Parser, YAMLFrontMatterSyntax, YAMLMappingSyntax, YAMLNodeSyntax, YAMLScalarSyntax,
-  YAMLSequenceSyntax,
-} from '../syntax/index.js';
 import { Fragment, Slice, type Node, type NodeType, type ResolvedPos } from 'prosemirror-model';
 import { ReplaceAroundStep, type Transform } from 'prosemirror-transform';
-import { fieldSource, frontMatterSource } from '../parse/field.js';
-import { parseFrontMatter } from '../parse/parse.js';
+import { fieldSource } from '../parse/field.js';
+import { blockAtPosition, blockStorageRange, commonBlockRange, selectableBlocks } from '../state/selection.js';
 import { canonicalTableLines, definitionFrames, footnoteLabelFrame } from '../unparse/frames.js';
 import { defaultUnparseOptions, unparseSlice } from '../unparse/unparse.js';
-import { unparseFrontMatter } from '../unparse/yaml.js';
 import { combine } from './classes.js';
-import { readingShapes } from './reading.js';
 import { reshapeBlocks } from './reshape.js';
 import { keptShape, type Shape } from './transform.js';
-
-const frontMatterParser = new Parser({ target: 'editor' });
 
 /** Whether removing or replacing `from..to` crosses front matter or a structured head/definition. */
 export function needsStructuredRemove(doc: Node, from: number, to: number): boolean {
@@ -29,7 +21,8 @@ export function needsStructuredRemove(doc: Node, from: number, to: number): bool
   const left = doc.resolve(from);
   const right = doc.resolve(to);
   if (!left.parent.isTextblock || !right.parent.isTextblock || left.sameParent(right)) return false;
-  if (left.depth >= 1 && left.node(1).type.isInGroup('frontMatter')) return true;
+  if ((left.depth >= 1 && left.node(1).type.isInGroup('frontMatter')) ||
+      (right.depth >= 1 && right.node(1).type.isInGroup('frontMatter'))) return true;
   const nodes = doc.type.schema.nodes;
   const leftType = left.parent.type;
   if (leftType === nodes.footnoteLabel || leftType === nodes.linkLabel ||
@@ -52,8 +45,9 @@ export function needsStructuredRemove(doc: Node, from: number, to: number): bool
 export function removeAcrossFields(tr: Transform, from: number, to: number): number | undefined {
   let left = tr.doc.resolve(from);
   let right = tr.doc.resolve(to);
-  if (left.depth >= 1 && left.node(1).type.isInGroup('frontMatter')) {
-    return removeFromFrontMatter(tr, from, to);
+  if ((left.depth >= 1 && left.node(1).type.isInGroup('frontMatter')) ||
+      (right.depth >= 1 && right.node(1).type.isInGroup('frontMatter'))) {
+    return removeFrontMatterBlocks(tr, from, to);
   }
   if (needsStructuredRemove(tr.doc, from, to)) {
     removeByReshape(tr, from, to);
@@ -84,272 +78,19 @@ export function removeAcrossFields(tr: Transform, from: number, to: number): num
   return undefined;
 }
 
-interface YAMLScalarEntry {
-  readonly node: Node;
-  readonly syntax: YAMLScalarSyntax;
-  readonly pos: number;
-}
-
-function stripYAMLSpelling(node: Node): Node {
-  if (node.isText) return node;
-  const children: Node[] = [];
-  node.forEach(child => children.push(stripYAMLSpelling(child)));
-  return node.type.create({ ...node.attrs, spelling: null }, children, node.marks);
-}
-
-function collectYAMLScalars(node: Node, syntax: YAMLNodeSyntax, pos: number, out: YAMLScalarEntry[]): void {
-  const nodes = node.type.schema.nodes;
-  if (node.type === nodes.yamlScalar && syntax instanceof YAMLScalarSyntax) {
-    out.push({ node, syntax, pos });
-    return;
+function removeFrontMatterBlocks(tr: Transform, from: number, to: number): number {
+  const blocks = selectableBlocks(tr.doc, { from, to });
+  const start = blockAtPosition(blocks, from);
+  const end = blockAtPosition(blocks, to, true);
+  let range: { readonly from: number; readonly to: number };
+  if (start && end) {
+    range = blockStorageRange(tr.doc, commonBlockRange(tr.doc, start, end));
+  } else {
+    const first = tr.doc.firstChild!;
+    range = { from: 0, to: end && end.to > first.nodeSize ? end.to : first.nodeSize };
   }
-  if (node.type === nodes.yamlMapping && syntax instanceof YAMLMappingSyntax) {
-    let childPos = pos + 1;
-    for (let index = 0; index < node.childCount; index++) {
-      const pair = node.child(index);
-      const pairSyntax = syntax.children[index]!;
-      const keyNode = pair.child(0);
-      const valueNode = pair.child(1);
-      collectYAMLScalars(keyNode, pairSyntax.key, childPos + 1, out);
-      collectYAMLScalars(valueNode, pairSyntax.value, childPos + 1 + keyNode.nodeSize, out);
-      childPos += pair.nodeSize;
-    }
-    return;
-  }
-  if (node.type === nodes.yamlSequence && syntax instanceof YAMLSequenceSyntax) {
-    let childPos = pos + 1;
-    for (let index = 0; index < node.childCount; index++) {
-      const item = node.child(index);
-      collectYAMLScalars(item, syntax.children[index]!, childPos, out);
-      childPos += item.nodeSize;
-    }
-  }
-}
-
-function quotedScalarOffsets(raw: string): number[] | null {
-  if (raw.length >= 2 && raw.startsWith('"') && raw.endsWith('"')) {
-    const offsets: number[] = [];
-    let cursor = 1;
-    while (cursor < raw.length - 1) {
-      offsets.push(cursor);
-      if (raw[cursor] === '\\' && cursor + 1 < raw.length - 1) {
-        const next = raw[cursor + 1]!;
-        if (next === 'x') cursor += 4;
-        else if (next === 'u') cursor += 6;
-        else if (next === 'U') {
-          const hex = Number.parseInt(raw.slice(cursor + 2, cursor + 10), 16);
-          if (hex > 0xffff) offsets.push(cursor);
-          cursor += 10;
-        } else {
-          cursor += 2;
-        }
-      } else {
-        cursor++;
-      }
-    }
-    offsets.push(raw.length - 1);
-    return offsets;
-  }
-  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
-    const offsets: number[] = [];
-    let cursor = 1;
-    while (cursor < raw.length - 1) {
-      offsets.push(cursor);
-      if (raw[cursor] === "'" && raw[cursor + 1] === "'") cursor += 2;
-      else cursor++;
-    }
-    offsets.push(raw.length - 1);
-    return offsets;
-  }
-  return null;
-}
-
-function scalarInnerToSource(node: Node, syntax: YAMLScalarSyntax, fmSource: string, offset: number): number {
-  const raw = fmSource.slice(syntax.start, syntax.end);
-  if (raw.length === node.content.size) return syntax.start + offset;
-  const offsets = quotedScalarOffsets(raw);
-  if (offsets && offset >= 0 && offset < offsets.length) return syntax.start + offsets[offset]!;
-  if (offset <= 0) return syntax.start;
-  if (offset >= node.content.size) return syntax.end;
-  return syntax.start + Math.min(raw.length, offset);
-}
-
-function scalarSourceToInner(node: Node, syntax: YAMLScalarSyntax, fmSource: string, sourcePos: number): number {
-  const raw = fmSource.slice(syntax.start, syntax.end);
-  const rel = sourcePos - syntax.start;
-  if (raw.length === node.content.size) return Math.max(0, Math.min(node.content.size, rel));
-  const offsets = quotedScalarOffsets(raw);
-  if (offsets) {
-    for (let index = 0; index < offsets.length; index++) {
-      if (offsets[index]! >= rel) return Math.min(node.content.size, index);
-    }
-    return node.content.size;
-  }
-  return Math.max(0, Math.min(node.content.size, rel));
-}
-
-function yamlEditorToSource(frontMatter: Node, syntax: YAMLFrontMatterSyntax, fmSource: string,
-  editorPos: number): number {
-  const entries: YAMLScalarEntry[] = [];
-  collectYAMLScalars(frontMatter.firstChild!, syntax.root, 1, entries);
-  for (const entry of entries) {
-    const start = entry.pos + 1;
-    const end = start + entry.node.content.size;
-    if (editorPos >= start && editorPos <= end) {
-      return scalarInnerToSource(entry.node, entry.syntax, fmSource, editorPos - start);
-    }
-  }
-  for (const entry of entries) {
-    if (entry.pos + 1 >= editorPos) return entry.syntax.start;
-  }
-  return syntax.root.end;
-}
-
-function yamlSourceToEditor(frontMatter: Node, syntax: YAMLFrontMatterSyntax, fmSource: string,
-  sourcePos: number): number {
-  const entries: YAMLScalarEntry[] = [];
-  collectYAMLScalars(frontMatter.firstChild!, syntax.root, 1, entries);
-  if (!entries.length) return frontMatter.nodeSize;
-  for (const entry of entries) {
-    if (sourcePos <= entry.syntax.start) return entry.pos + 1;
-    if (sourcePos <= entry.syntax.end) {
-      return entry.pos + 1 + scalarSourceToInner(entry.node, entry.syntax, fmSource, sourcePos);
-    }
-  }
-  const last = entries.at(-1)!;
-  return last.pos + 1 + last.node.content.size;
-}
-
-function preserveUntouchedYAMLPairs(original: Node, rebuilt: Node, from: number, to: number): Node {
-  const nodes = original.type.schema.nodes;
-  if (original.type !== nodes.yamlFrontMatter || rebuilt.type !== nodes.yamlFrontMatter) {
-    const trailing = original.attrs.spelling?.trailingBlankLines;
-    if (trailing === undefined) return rebuilt;
-    return rebuilt.type.create(
-      { ...rebuilt.attrs, spelling: { ...rebuilt.attrs.spelling, trailingBlankLines: trailing } },
-      rebuilt.content,
-    );
-  }
-  const left = original.resolve(Math.max(0, Math.min(original.content.size, from)));
-  const right = original.resolve(Math.max(0, Math.min(original.content.size, to)));
-  const oldRoot = original.firstChild!;
-  const newRoot = rebuilt.firstChild!;
-  if (left.depth < 2 || right.depth < 2 || left.node(1) !== oldRoot || right.node(1) !== oldRoot) {
-    return rebuilt.type.create({ ...rebuilt.attrs, spelling: original.attrs.spelling }, rebuilt.content);
-  }
-  const keepBefore = left.index(1);
-  const keepAfter = oldRoot.childCount - 1 - right.index(1);
-  if (newRoot.childCount < keepBefore + Math.max(0, keepAfter)) {
-    return rebuilt.type.create({ ...rebuilt.attrs, spelling: original.attrs.spelling }, rebuilt.content);
-  }
-  const children: Node[] = [];
-  for (let index = 0; index < newRoot.childCount; index++) {
-    if (index < keepBefore) {
-      children.push(oldRoot.child(index));
-    } else if (keepAfter > 0 && index >= newRoot.childCount - keepAfter) {
-      const oldIndex = oldRoot.childCount - (newRoot.childCount - index);
-      children.push(oldRoot.child(oldIndex));
-    } else {
-      children.push(newRoot.child(index));
-    }
-  }
-  const mergedRoot = newRoot.type.create({ ...newRoot.attrs, spelling: oldRoot.attrs.spelling }, children);
-  return rebuilt.type.create({ ...rebuilt.attrs, spelling: original.attrs.spelling }, [mergedRoot]);
-}
-
-function frontMatterSliceSource(frontMatter: Node): {
-  readonly fmSource: string;
-  readonly parsedFM: YAMLFrontMatterSyntax | null;
-  readonly canonical: Node;
-} {
-  const nodes = frontMatter.type.schema.nodes;
-  if (frontMatter.type === nodes.rawFrontMatter) {
-    const canonical = stripYAMLSpelling(frontMatter);
-    return { fmSource: frontMatterSource(canonical), parsedFM: null, canonical };
-  }
-  const canonical = stripYAMLSpelling(frontMatter);
-  const fmSource = unparseFrontMatter(canonical);
-  const parsed = frontMatterParser.parseFile('\ufeff' + fmSource).document.frontMatter;
-  const parsedFM = parsed instanceof YAMLFrontMatterSyntax ? parsed : null;
-  return { fmSource, parsedFM, canonical };
-}
-
-function frontMatterEndpoint(frontMatter: Node, canonical: Node, parsedFM: YAMLFrontMatterSyntax | null,
-  fmSource: string, pos: number): number {
-  if (pos >= frontMatter.nodeSize) return fmSource.length;
-  if (frontMatter.type === frontMatter.type.schema.nodes.rawFrontMatter) {
-    const prefixLen = 4;
-    return prefixLen + Math.max(0, Math.min(frontMatter.textContent.length, pos - 1));
-  }
-  if (!parsedFM) return fmSource.length;
-  return yamlEditorToSource(canonical, parsedFM, fmSource, pos);
-}
-
-function removeFromFrontMatter(tr: Transform, from: number, to: number): number {
-  const schema = tr.doc.type.schema;
-  const nodes = schema.nodes;
-  const frontMatter = tr.doc.firstChild!;
-  const fmSize = frontMatter.nodeSize;
-  const { fmSource, parsedFM, canonical } = frontMatterSliceSource(frontMatter);
-  const srcFrom = frontMatterEndpoint(frontMatter, canonical, parsedFM, fmSource, from);
-  if (to <= fmSize) {
-    const srcTo = frontMatterEndpoint(frontMatter, canonical, parsedFM, fmSource, to);
-    const nextSource = fmSource.slice(0, srcFrom) + fmSource.slice(srcTo);
-    const parsedDoc = frontMatterParser.parseFile('\ufeff' + nextSource).document;
-    if (parsedDoc.frontMatter) {
-      const rawBuilt = parseFrontMatter(parsedDoc.frontMatter, schema);
-      const nextFM = preserveUntouchedYAMLPairs(frontMatter, rawBuilt, from, to);
-      tr.replaceWith(0, fmSize, nextFM);
-      if (parsedDoc.frontMatter instanceof YAMLFrontMatterSyntax) {
-        return yamlSourceToEditor(nextFM, parsedDoc.frontMatter, nextSource, srcFrom);
-      }
-      const fenceLen = (parsedDoc.frontMatter.spelling.fence ?? '---').length + 1;
-      const rawOffset = Math.max(0, Math.min(nextFM.textContent.length, srcFrom - fenceLen));
-      return 1 + rawOffset;
-    }
-  }
-  const leftSource = fmSource.slice(0, srcFrom);
-  const right = tr.doc.resolve(to);
-  const authored = new Map<Shape, Node>();
-  const suffix = rightSuffix(tr.doc, right, 0, to, nodes.paragraph, authored);
-  const rightEnd = suffix.blocks.length === 0 ? suffix.cutPos : right.after(1);
-  let rightText = '';
-  const origins: { start: number; end: number; origin: number }[] = [];
-  for (const piece of suffix.inline) {
-    if (piece.kind === 'text') {
-      rightText += piece.text;
-    } else {
-      const sliceText = tr.doc.textBetween(piece.from, piece.to, '', '\n');
-      const startOffset = leftSource.length + rightText.length;
-      origins.push({ start: startOffset, end: startOffset + sliceText.length, origin: piece.from });
-      rightText += sliceText;
-    }
-  }
-  const combined = leftSource + rightText;
-  const parsedDoc = frontMatterParser.parseFile('\ufeff' + combined).document;
-  const reading = readingShapes(parsedDoc.children, combined, schema, origins, authored);
-  const bodyShapes: Shape[] = [...reading.shapes, ...suffix.blocks];
-  if (parsedDoc.frontMatter) {
-    const nextFM = preserveUntouchedYAMLPairs(frontMatter, parseFrontMatter(parsedDoc.frontMatter, schema), from, fmSize);
-    if (!bodyShapes.length && rightEnd === tr.doc.content.size) {
-      bodyShapes.push({ kind: 'text', type: nodes.paragraph, meaning: {}, text: [] });
-    }
-    const changedBody = reshapeBlocks(tr, fmSize, rightEnd, bodyShapes, authored);
-    tr.replaceWith(0, fmSize, nextFM);
-    if (leftSource.length <= parsedDoc.frontMatter.end) {
-      if (parsedDoc.frontMatter instanceof YAMLFrontMatterSyntax) {
-        return yamlSourceToEditor(nextFM, parsedDoc.frontMatter, combined, leftSource.length);
-      }
-      const fenceLen = (parsedDoc.frontMatter.spelling.fence ?? '---').length + 1;
-      return 1 + Math.max(0, Math.min(nextFM.textContent.length, leftSource.length - fenceLen));
-    }
-    return nextFM.nodeSize + changedBody.locate(reading.locate(leftSource.length));
-  }
-  if (!bodyShapes.length && rightEnd === tr.doc.content.size) {
-    bodyShapes.push({ kind: 'text', type: nodes.paragraph, meaning: {}, text: [] });
-  }
-  const changed = reshapeBlocks(tr, 0, rightEnd, bodyShapes, authored);
-  return changed.locate(reading.locate(leftSource.length));
+  tr.deleteRange(range.from, range.to);
+  return Math.min(range.from, tr.doc.content.size);
 }
 
 interface RightSuffix {

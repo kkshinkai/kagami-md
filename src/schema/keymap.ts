@@ -26,7 +26,9 @@ import { enterPending } from './pending.js';
 import { enterInCode, indentCodeBlock } from './code.js';
 import { calloutBackspace, enterCallout } from './callout.js';
 import {
-  enterFrontmatter, frontmatterBackspace, insertAfterFrontmatter, navigateFrontmatter, toggleFrontmatterBoolean,
+  enterFrontmatter, frontmatterArrow, frontmatterBackspace, frontmatterDelete, frontmatterShiftArrow,
+  frontmatterVerticalArrow, insertAfterFrontmatter, insertFrontmatterNewline, navigateFrontmatter,
+  toggleFrontmatterBoolean,
 } from './frontmatter.js';
 import { headingToParagraph } from './heading.js';
 import {
@@ -85,6 +87,12 @@ export function baseKeymap(): Plugin {
     'Alt-Ctrl-Meta-Backspace': frontmatterBackspace,
     'Shift-Alt-Ctrl-Meta-Backspace': frontmatterBackspace,
     Delete: deleteUnit('forward'), 'Mod-Delete': deleteForward,
+    ArrowLeft: frontmatterArrow(-1), ArrowRight: frontmatterArrow(1),
+    ArrowUp: frontmatterVerticalArrow(-1), ArrowDown: frontmatterVerticalArrow(1),
+    'Shift-ArrowLeft': frontmatterShiftArrow('horizontal', -1),
+    'Shift-ArrowRight': frontmatterShiftArrow('horizontal', 1),
+    'Shift-ArrowUp': frontmatterShiftArrow('vertical', -1),
+    'Shift-ArrowDown': frontmatterShiftArrow('vertical', 1),
     Space: toggleFrontmatterBoolean, 'Shift-Space': toggleFrontmatterBoolean,
     'Mod-b': format(toggleStrong), 'Mod-i': format(toggleEmphasis),
     'Mod-Shift-x': format(toggleStrikethrough), 'Mod-Shift-h': format(toggleHighlight),
@@ -189,7 +197,7 @@ export const joinForward: Command = (state, dispatch) => {
 };
 
 /** Delete forward through the structural boundary shared by deletion shortcuts. */
-const deleteForward: Command = chainCommands(guardCellBoundary(1), deleteDefinitionForward,
+const deleteForward: Command = chainCommands(frontmatterDelete, guardCellBoundary(1), deleteDefinitionForward,
   deleteSelection, joinForward, selectAtom(1));
 
 /** Enter gives each feature its case before the ordinary textblock split. */
@@ -205,7 +213,7 @@ const enterCalloutTitle: Command = (state, dispatch, view) =>
 
 /** Insert the line break appropriate to a literal body, a table cell, or Markdown text. */
 const insertLineBreak: Command = (state, dispatch, view) => chainCommands(
-  enterFrontmatter, enterCalloutTitle, insertMathText('\n'), insertTableLineBreak, insertSourceLineBreak,
+  insertFrontmatterNewline, enterCalloutTitle, insertMathText('\n'), insertTableLineBreak, insertSourceLineBreak,
 )(state, dispatch, view);
 
 /** Leave a literal body or a table at its own container depth. */

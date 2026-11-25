@@ -6,7 +6,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 import type { DOMNode } from './dom.js';
-import type { Node } from 'prosemirror-model';
+import { type Node, Slice } from 'prosemirror-model';
 import { Plugin, Selection, TextSelection, type EditorState } from 'prosemirror-state';
 import { closeHistory } from 'prosemirror-history';
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view';
@@ -14,7 +14,7 @@ import { canRunCommand } from '../state/input.js';
 import { insert, remove } from '../transform/transform.js';
 import { beginOwnedPointerSelection, endOwnedPointerSelection } from './selection.js';
 import {
-  BlockSelection, selectedBlocks, commonBlockRange, selectableBlocks,
+  BlockSelection, blockStorageRange, commonBlockRange, selectedBlocks, selectableBlocks,
   type BlockRange, type SelectableBlock,
 } from '../state/selection.js';
 import {
@@ -47,7 +47,7 @@ export function blockDrag(preview: DragImage): Plugin {
         if (!(selection instanceof BlockSelection) || event.isComposing) return false;
         if (event.key === 'Backspace' || event.key === 'Delete') {
           const tr = view.state.tr;
-          remove(tr, selection.from, selection.to);
+          selection.replace(tr);
           view.dispatch(tr.scrollIntoView());
           return true;
         }
@@ -68,9 +68,18 @@ export function blockDrag(preview: DragImage): Plugin {
         }
         if (event.key === 'Enter') {
           const tr = view.state.tr;
-          insert(tr, selection.from, tr.doc.type.schema.nodes.paragraph, {});
-          remove(tr, selection.from + 2, selection.to + 2);
-          tr.setSelection(Selection.near(tr.doc.resolve(selection.from + 1)));
+          const paragraph = tr.doc.type.schema.nodes.paragraph;
+          const range = blockStorageRange(tr.doc, selection);
+          const $pos = tr.doc.resolve(range.from);
+          if ($pos.parent.canReplaceWith($pos.index(), $pos.index(), paragraph)) {
+            const before = tr.steps.length;
+            insert(tr, range.from, paragraph, {});
+            const map = tr.mapping.slice(before);
+            remove(tr, map.map(range.from, 1), map.map(range.to, 1));
+            tr.setSelection(Selection.near(tr.doc.resolve(range.from), 1));
+          } else {
+            selection.replace(tr, Slice.empty);
+          }
           view.dispatch(tr.scrollIntoView());
           return true;
         }
@@ -233,8 +242,7 @@ class BlockDragView {
   };
   private moveBrush = (event: MouseEvent) => {
     const brush = this.brush;
-    if (!brush || (brush.pointer !== null && (!('pointerId' in event) || event.pointerId !== brush.pointer)))
-      return;
+    if (!brush || (brush.pointer !== null && (event as PointerEvent).pointerId !== brush.pointer)) return;
     if (!(event.buttons & 1)) {
       // A native zero-button move can precede pointerup. It completes an active brush;
       // a pending press cannot become a bottom-space click without an explicit release.
@@ -309,9 +317,10 @@ class BlockDragView {
     if (
       !brush ||
       event.button !== 0 ||
-      (brush.pointer !== null && (!('pointerId' in event) || event.pointerId !== brush.pointer))
-    )
+      (brush.pointer !== null && (event as PointerEvent).pointerId !== brush.pointer)
+    ) {
       return;
+    }
     this.finishBrush(event);
   };
   private finishBrush(event: MouseEvent) {
@@ -501,6 +510,7 @@ function canStartBrush(
   if (
     target?.nodeType != 1 ||
     event.defaultPrevented ||
+    (event.shiftKey && !event.altKey) ||
     (target !== gutter &&
       target.closest(
         'button,input,textarea,select,a,[role="button"],[role="slider"],[role="separator"],[contenteditable="false"]',
@@ -526,6 +536,10 @@ function canStartBrush(
   // event's actual DOM target also leaves container gaps available, unlike nearest-caret hits.
   if (view.state.doc.resolve(view.posAtDOM(target, 0)).parent.isTextblock) return false;
   const frame = target.closest<HTMLElement>('[data-block-box]');
+  for (let current: HTMLElement | null = target as HTMLElement; current && current !== frame && current !== view.dom;
+       current = current.parentElement) {
+    if (nodeView(current)?.brush === false) return false;
+  }
   if (!frame) return true;
   const layout = nodeView(frame);
   if (!layout) return false;
@@ -649,6 +663,18 @@ function blockAtPoint(blocks: readonly RenderedBlock[], x: number, y: number): R
       (!result || block.depth > result.depth)
     )
       result = block;
+  }
+  if (!result) return undefined;
+  let firstChildTop = Infinity;
+  let minChildLeft = Infinity;
+  for (const block of blocks) {
+    if (block.parent?.from === result.from) {
+      firstChildTop = Math.min(firstChildTop, block.rect.top);
+      minChildLeft = Math.min(minChildLeft, block.rect.left);
+    }
+  }
+  if (firstChildTop < Infinity && y >= firstChildTop && x > minChildLeft) {
+    return undefined;
   }
   return result;
 }

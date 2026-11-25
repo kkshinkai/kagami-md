@@ -91,15 +91,28 @@ export class FrontmatterView implements PropertyView {
     this.render();
   }
 
-  private get session(): FrontmatterSession { return frontmatterKey.getState(this.view.state)!; }
-  private get collapsed(): boolean { return this.session.collapsed; }
-  private get sourceMode(): boolean { return this.session.source !== null; }
-  private get error(): string | null { return this.session.source?.error ?? null; }
+  private get session(): FrontmatterSession {
+    return frontmatterKey.getState(this.view.state)!;
+  }
+
+  private get collapsed(): boolean {
+    return this.session.collapsed;
+  }
+
+  private get sourceMode(): boolean {
+    return this.session.source !== null;
+  }
+
+  private get error(): string | null {
+    return this.session.source?.error ?? null;
+  }
+
   private isComposing(): boolean {
     return this.view.composing || compositionState(this.view.state)?.isComposing === true ||
       this.source?.isComposing() === true;
   }
 
+  /** Relocate selection into the document body before collapsing or hiding properties. */
   private moveSelectionOutside(): void {
     const pos = this.getPos();
     const selected = this.view.state.selection;
@@ -108,12 +121,14 @@ export class FrontmatterView implements PropertyView {
       TextSelection.near(this.view.state.doc.resolve(pos + this.node.nodeSize), 1)));
   }
 
+  /** Toggle folded presentation for front matter in view state. */
   private setCollapsed(collapsed: boolean): void {
     if (this.view.isDestroyed || this.isComposing() || collapsed === this.collapsed) return;
     if (collapsed) this.moveSelectionOutside();
     this.store({ ...this.session, collapsed });
   }
 
+  /** Switch between structured property capsules and the embedded YAML source editor. */
   private setSourceMode(source: boolean): boolean {
     if (this.view.isDestroyed || this.isComposing()) return false;
     if (source === this.sourceMode) return true;
@@ -131,6 +146,7 @@ export class FrontmatterView implements PropertyView {
     return true;
   }
 
+  /** Mount the CodeMirror YAML source editor for `draft`. */
   private openSource(draft: FrontmatterDraft): void {
     this.mount.hidden = false;
     this.source = new YAMLSourceView(this.mount, draft.draft, draft.selection,
@@ -138,6 +154,7 @@ export class FrontmatterView implements PropertyView {
     this.source.inputElement.setAttribute('aria-label', 'YAML source');
   }
 
+  /** Mirror draft text and selection edits from the embedded YAML source editor into plugin state. */
   private sourceChanged(): void {
     const draft = this.session.source;
     if (!draft || !this.source) return;
@@ -150,14 +167,18 @@ export class FrontmatterView implements PropertyView {
     });
   }
 
+  /** Persist updated frontmatter presentation state without adding a history step. */
   private store(session: FrontmatterSession): void {
     this.view.dispatch(this.view.state.tr.setMeta(frontmatterKey, session).setMeta('addToHistory', false));
   }
+
+  /** Show a validation or read-only banner error inside the active YAML source session. */
   private setError(error: string): void {
     const draft = this.session.source;
     if (draft) this.store({ ...this.session, source: { ...draft, error } });
   }
 
+  /** Parse and apply edited YAML source, rejecting syntax errors or embedded delimiter lines. */
   private applySource(): boolean {
     const session = this.session.source!;
     const draft = this.source!.read().markdown;
@@ -173,13 +194,13 @@ export class FrontmatterView implements PropertyView {
           'Properties changed while this draft was open. Cancel and reopen the source to edit the current properties.');
         return false;
       }
-      const parsed = getParser(this.view.state).parseFile(
-        '---\n' + draft + (draft.endsWith('\n') ? '' : '\n') + '---').document.frontMatter;
-      if (parsed?.type !== 'yamlFrontMatter') {
-        this.setError('YAML is incomplete or contains unsupported types. Correct the draft before applying it.');
+      const parsedDocument = getParser(this.view.state).parseFile(
+        '---\n' + draft + (draft.endsWith('\n') ? '' : '\n') + '---').document;
+      if (parsedDocument.frontMatter?.type !== 'yamlFrontMatter' || parsedDocument.children.length > 0) {
+        this.setError('YAML is incomplete or contains unsupported syntax. Correct the draft before applying it.');
         return false;
       }
-      const next = parseFrontMatter(parsed, this.view.state.schema);
+      const next = parseFrontMatter(parsedDocument.frontMatter, this.view.state.schema, this.node);
       this.closeSource();
       const tr = closeHistory(this.view.state.tr);
       replace(tr, pos, pos + this.node.nodeSize, new Slice(Fragment.from(next), 0, 0));
@@ -194,6 +215,7 @@ export class FrontmatterView implements PropertyView {
     return true;
   }
 
+  /** Discard unsaved YAML source edits and restore the capsule view. */
   private cancelSource(): void {
     if (this.view.isDestroyed || !this.source || this.isComposing()) return;
     this.closeSource();
@@ -202,6 +224,8 @@ export class FrontmatterView implements PropertyView {
       .setMeta('addToHistory', false));
     this.view.focus();
   }
+
+  /** Destroy the embedded YAML source editor instance if mounted. */
   private closeSource(): void {
     this.source?.destroy();
     this.source = null;
@@ -226,11 +250,14 @@ export class FrontmatterView implements PropertyView {
     this.errorMessage.textContent = error ?? '';
   }
 
+  /** Update the mounted frontmatter node when its ProseMirror type remains `yamlFrontMatter`. */
   update(node: Node): boolean {
     if (node.type !== this.node.type) return false;
     this.node = node;
     return true;
   }
+
+  /** Reconcile the embedded YAML source editor and header controls with `this.session`. */
   sync(): void {
     const draft = this.session.source;
     if (draft && !this.source) this.openSource(draft);
@@ -238,22 +265,31 @@ export class FrontmatterView implements PropertyView {
     this.source?.updateOptions({ readOnly: !this.view.editable });
     this.render();
   }
+
+  /** Sync root, source state, and auto-reveal folded front matter when selection enters it. */
   refresh(previous: EditorState, force = false): void {
     this.source?.view.setRoot(this.view.root);
     if (force || frontmatterKey.getState(previous) !== this.session) this.sync();
     const selected = this.view.state.selection;
     const pos = this.getPos();
     // Navigation and undo that explicitly select a folded field reveal it.
-    if (!selected.eq(previous.selection) && pos !== undefined && selected.from < pos + this.node.nodeSize &&
-        selected.to > pos) {
+    if (
+      !selected.eq(previous.selection) &&
+      pos !== undefined &&
+      selected.from < pos + this.node.nodeSize &&
+      selected.to > pos
+    ) {
       if (this.collapsed) this.store({ ...this.session, collapsed: false });
       this.source?.focus();
     }
   }
+
+  /** Route undo/redo shortcuts to the active YAML source editor or editor history. */
   handleKeyDown(event: KeyboardEvent): boolean {
     if (!this.source) return !this.view.isDestroyed && routeHistoryKey(this.view, event);
-    if (event.altKey || !(event.metaKey || event.ctrlKey) || !['z', 'y'].includes(event.key.toLowerCase()))
+    if (event.altKey || !(event.metaKey || event.ctrlKey) || !['z', 'y'].includes(event.key.toLowerCase())) {
       return false;
+    }
     event.preventDefault();
     if (this.view.editable) {
       if (event.key.toLowerCase() === 'y' || event.shiftKey) this.source.redo();
@@ -261,14 +297,20 @@ export class FrontmatterView implements PropertyView {
     }
     return true;
   }
+
+  /** Prevent ProseMirror from handling pointer/key events inside header controls or the YAML source editor. */
   stopEvent(event: Event): boolean {
     const target = event.target as DOMNode;
     return this.header.contains(target) || this.mount.contains(target);
   }
+
+  /** Ignore DOM mutations inside the non-editable header, source editor, or container state attributes. */
   ignoreMutation(mutation: ViewMutationRecord): boolean {
     return this.header.contains(mutation.target) || this.mount.contains(mutation.target) ||
       mutation.type === 'attributes' && [this.dom, this.contentDOM, this.body].includes(mutation.target as HTMLElement);
   }
+
+  /** Detach DOM handlers and unregister the frontmatter view on teardown. */
   destroy(): void {
     this.disclosure.onclick = this.sourceButton.onclick = this.cancelButton.onclick = this.header.onkeydown = null;
     this.closeSource();

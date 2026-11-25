@@ -6,25 +6,36 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 .markdown-editor .md-frontmatter {
-  /* Properties are data, not prose: they are set as a table's cells are, at 14px, in rows
-     with their own small inset rather than a paragraph's. Entries keep a gap, so that
-     selected entries are painted as separate blocks. */
-  --yaml-key-width: 120px;
-  --yaml-entry-gap: 2px;
-  --yaml-type-column: 22px;
-  --yaml-collection-inset: 12px;
-  --yaml-row-padding: 1px;
+  --yaml-key-width: 116px;
+  --yaml-entry-gap: 4px;
+  --yaml-type-column: 24px;
+
+  /* Single-seed top-down tonal ramp: inline depth 1 starts at a restrained light gray (5.4%),
+     all siblings at the same inline depth share one exact surface, and deeper inline levels
+     step monotonically lighter toward pure --editor-menu-bg (0%, white in light mode). */
+  --yaml-seed: var(--editor-yaml-color, var(--editor-text-color));
+  --yaml-tint: 0%;
+  --yaml-control-hover-bg: color-mix(in srgb, var(--yaml-seed) 8%, transparent);
+  --yaml-border: color-mix(in srgb, var(--yaml-seed) 11%, transparent);
+  --yaml-divider: color-mix(in srgb, var(--yaml-seed) 13%, transparent);
+
+  color-scheme: var(--editor-color-scheme);
   position: relative;
-  margin: 0 0 12px;
-  padding: 0 0 8px;
+  margin: 0 0 20px;
+  padding: 0 0 12px;
   border-bottom: 1px solid var(--editor-border-color);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13.5px;
+  line-height: 20px;
+}
+
+.markdown-editor .md-frontmatter[data-collapsed='true'] {
+  padding-bottom: 6px;
 }
 
 .md-frontmatter [hidden] { display: none !important; }
+
 .md-frontmatter-heading {
-  padding: 0 var(--editor-block-padding-inline, 4px) 2px;
+  padding: 0 2px 6px;
   color: var(--editor-muted-color);
   font-size: 12px;
   font-weight: 500;
@@ -38,18 +49,25 @@
   justify-content: space-between;
   gap: 4px;
 }
+
 .frontmatter-header-actions { display: flex; align-items: center; gap: 2px; }
+
 .markdown-editor .frontmatter-header button {
-  height: 22px;
-  padding: 0 4px;
+  height: 24px;
+  padding-block: 0;
+  padding-inline: 6px 8px;
+  border-radius: 999px;
   color: var(--editor-muted-color);
   font-size: 12px;
 }
+
 .markdown-editor .frontmatter-header button svg { width: 13px; height: 13px; }
 .frontmatter-disclosure svg { transition: transform 120ms ease; }
-.frontmatter-disclosure[aria-expanded="true"] svg { transform: rotate(90deg); }
+.frontmatter-disclosure[aria-expanded='true'] svg { transform: rotate(90deg); }
+
 .frontmatter-source-error {
   flex-basis: 100%;
+  padding-inline: 6px;
   color: var(--editor-callout-caution-color, #c33);
   font-weight: 400;
 }
@@ -57,12 +75,13 @@
 .markdown-editor .md-frontmatter-yaml-source,
 .markdown-editor .ProseMirror .md-frontmatter-source {
   margin: 0;
-  padding: 7px 11px;
+  padding: 8px 12px;
   border: 1px solid var(--editor-border-color);
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   font-size: 13px;
 }
+
 .md-frontmatter-yaml-source { overflow: hidden; }
 .md-frontmatter-yaml-source .cm-editor { background: transparent; }
 .md-frontmatter-yaml-source .cm-focused { outline: none; }
@@ -77,126 +96,63 @@
   color: var(--editor-subtle-color);
 }
 
-.markdown-editor :is(.md-yaml-property, .md-yaml-item) {
-  position: relative;
-  display: grid;
-  grid-template-columns: var(--yaml-type-column) minmax(0, 1fr);
-  align-items: first baseline;
-  margin: 0;
-  padding: 0;
-  border-radius: var(--block-selection-radius, 6px);
-}
+/* --- Shared reusable controls (one semantic role, one style everywhere) --- */
 
-/* Collections own sibling separation once. Their first item starts at the
-   collection edge, even when another collection is the item's entire value. */
-.md-yaml-map, .md-yaml-array, .md-yaml-entries {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.md-yaml-map, .md-yaml-array, .md-yaml-entries { gap: var(--yaml-entry-gap); }
-.md-yaml-entries:empty { display: none; }
-.md-yaml-entry-content {
-  grid-column: 2;
-  grid-row: 1;
-  display: grid;
-  grid-template-columns: minmax(72px, var(--yaml-key-width)) minmax(0, 1fr);
-  column-gap: 12px;
-  min-width: 0;
-  align-items: first baseline;
-}
-/* A property owns a key row: a value that wraps or holds a collection must not pull the key
-   down to its own baseline. The outer grid still aligns the type to the key's first line;
-   headless array items keep inheriting their value's baseline. */
-.md-yaml-property > .md-yaml-entry-content { align-items: start; }
-.md-yaml-item > .md-yaml-entry-content { grid-template-columns: minmax(0, 1fr); }
-.md-yaml-entry-content:has(> :is(.md-yaml-map, .md-yaml-array)) {
-  grid-template-columns: minmax(0, 1fr);
-  row-gap: var(--yaml-entry-gap);
-}
-.md-yaml-entry-content > :is(.md-yaml-map, .md-yaml-array) { padding-inline-start: var(--yaml-collection-inset); }
-
-/* The non-editable slot exports a real text baseline to the entry grid. Its
-   control is centered on that line without contributing button height to it.
-   First-baseline alignment propagates through nested grids and child stacks;
-   no accumulated depth offset or fixed top value is involved. */
 .md-yaml-type {
-  position: relative;
-  grid-column: 1;
-  grid-row: 1;
-  display: block;
-  width: 18px;
-  margin-inline-start: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
 }
-.md-yaml-type::before, .md-yaml-add::before { content: ' '; white-space: pre; }
-.md-yaml-type > *, .md-yaml-add > * {
-  position: absolute;
-  inset-inline-start: 0;
-  top: 50%;
-  transform: translateY(-50%);
+
+.md-yaml-type::before {
+  content: '\200b';
+  width: 0;
+  overflow: hidden;
+  line-height: 18px;
 }
+
 .markdown-editor .frontmatter-type-button {
   width: 18px;
   min-width: 0;
-  height: 20px;
+  height: 18px;
   min-height: 0;
-  padding: 3px 2px;
-  border-radius: 4px;
+  padding: 0;
+  border-radius: 999px;
   color: var(--editor-subtle-color);
+  transition: background-color 100ms ease, color 100ms ease;
 }
-.markdown-editor .frontmatter-type-button svg { width: 13px; height: 13px; }
 
-.md-yaml-key, .md-yaml-scalar {
-  box-sizing: border-box;
-  min-width: 0;
-  min-height: 1lh;
-  padding: var(--yaml-row-padding) var(--editor-block-padding-inline, 4px);
-  line-height: inherit;
-  white-space: pre-wrap;
+.markdown-editor .frontmatter-type-button:hover:not(:disabled),
+.markdown-editor .frontmatter-type-button[aria-expanded='true'] {
+  background: var(--yaml-control-hover-bg);
+  color: var(--editor-text-color);
 }
-.md-yaml-key { color: var(--editor-muted-color); }
-.md-yaml-key:has(> br:only-child)::before {
-  position: absolute;
-  content: attr(data-placeholder);
-  color: var(--editor-subtle-color);
-  pointer-events: none;
-}
-.md-yaml-number, .md-yaml-boolean, .md-yaml-null { font-variant-numeric: tabular-nums; }
-.md-yaml-null { color: var(--editor-subtle-color); }
 
-/* Empty and populated collections expose the same first-row baseline. The
-   append control has its own row after the item stack, never a child margin. */
-.md-yaml-add {
-  position: relative;
-  padding-block: var(--yaml-row-padding);
+.markdown-editor .frontmatter-type-button svg {
+  width: 12px;
+  height: 12px;
 }
-.markdown-editor .frontmatter-add-button {
-  height: 20px;
-  min-height: 0;
-  padding: 0 4px;
-  gap: 4px;
-  color: var(--editor-subtle-color);
-  font-size: 12px;
-  font-weight: 400;
-}
-.markdown-editor .frontmatter-add-button svg { width: 12px; height: 12px; }
 
-/* A real line baseline keeps the atomic value aligned with keys and text values. */
-.md-yaml-boolean { position: relative; }
-.md-yaml-boolean::before { content: ' '; white-space: pre; }
-.md-yaml-boolean-control {
-  position: absolute;
-  inset-inline-start: var(--editor-block-padding-inline, 4px);
-  top: 50%;
-  transform: translateY(-50%);
+.md-yaml-boolean {
   display: flex;
+  align-items: center;
+  min-height: 18px;
+  line-height: 0;
+  cursor: default;
 }
-.md-yaml-boolean.ProseMirror-selectednode { outline: none; }
-.md-yaml-boolean.ProseMirror-selectednode .md-yaml-boolean-control {
-  outline: 2px solid var(--editor-link-color);
-  outline-offset: 3px;
-  border-radius: 4px;
+
+.md-yaml-boolean-control {
+  display: flex;
+  align-items: center;
+  border-radius: 999px;
+  line-height: 0;
 }
+
+.markdown-editor .md-yaml-boolean.ProseMirror-selectednode {
+  outline: none;
+}
+
 .md-yaml-boolean-control > input {
   appearance: none;
   box-sizing: border-box;
@@ -204,22 +160,480 @@
   height: 16px;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--editor-muted-color);
-  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--yaml-seed) 36%, transparent);
+  border-radius: 999px;
+  outline: none;
   background: transparent;
   cursor: pointer;
+  transition: background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
 }
+
+.md-yaml-boolean-control > input:hover:not(:disabled):not(:checked) {
+  border-color: color-mix(in srgb, var(--yaml-seed) 56%, transparent);
+  background: var(--yaml-control-hover-bg);
+}
+
 .md-yaml-boolean-control > input:checked {
-  background: var(--editor-link-color) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 4 4L19 6'/%3E%3C/svg%3E") center / 14px 14px no-repeat;
+  background: var(--editor-link-color) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 4 4L19 6'/%3E%3C/svg%3E") center / 11px 11px no-repeat;
   border-color: var(--editor-link-color);
 }
-.md-yaml-boolean-control > input:focus-visible { outline: 2px solid var(--editor-link-color); outline-offset: 2px; }
+
+.md-yaml-boolean-control > input:checked:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--editor-link-color) 86%, var(--editor-text-color));
+  border-color: color-mix(in srgb, var(--editor-link-color) 86%, var(--editor-text-color));
+}
+
+.md-yaml-boolean-control > input:focus-visible,
+.md-yaml-boolean[data-focus-visible='true'] > .md-yaml-boolean-control > input {
+  border-color: var(--editor-focus-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--editor-focus-color) 28%, transparent);
+}
+
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter *,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter-source,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter-source * {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter::selection,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter ::selection,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter-source::selection,
+.markdown-editor .ProseMirror[data-drag-origin='body'] > .md-frontmatter-source ::selection {
+  background: transparent;
+}
+
+/* --- Collection layout carriers (never draw frames themselves) --- */
+
+.md-yaml-map:not([data-flow='true']),
+.md-yaml-array:not([data-flow='true']),
+.md-yaml-map:not([data-flow='true']) > .md-yaml-entries,
+.md-yaml-array:not([data-flow='true']) > .md-yaml-entries {
+  display: flex;
+  flex-direction: column;
+  gap: var(--yaml-entry-gap);
+  min-width: 0;
+}
+
+.md-yaml-map[data-flow='true'],
+.md-yaml-array[data-flow='true'] {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.md-yaml-map[data-flow='true'] > .md-yaml-entries,
+.md-yaml-array[data-flow='true'] > .md-yaml-entries {
+  display: contents;
+}
+
+.md-yaml-entries:empty { display: none; }
+
+/* --- Unboxed block-mode entries (data-in-flow="false" is a block row and never draws a box) --- */
+
+.markdown-editor :is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true']) {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--yaml-type-column) minmax(0, 1fr);
+  align-items: start;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--block-selection-radius, 6px);
+}
+
+:is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true']) > .md-yaml-type {
+  width: var(--yaml-type-column);
+  height: 24px;
+}
+
+.md-yaml-item:not([data-in-flow='true']) > .md-yaml-entry-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 8px;
+  min-width: 0;
+  align-items: start;
+}
+
+.md-yaml-property:not([data-in-flow='true']) > .md-yaml-entry-content {
+  display: grid;
+  grid-template-columns: minmax(76px, var(--yaml-key-width)) minmax(0, 1fr);
+  column-gap: 10px;
+  min-width: 0;
+  align-items: start;
+}
+
+/* Align every flow-valued block entry's icon & key/index with the first flex line's vertical midline */
+.markdown-editor :is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true'])[data-value-kind='flow'],
+:is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true'])[data-value-kind='flow'] > .md-yaml-entry-content {
+  align-items: first baseline;
+}
+
+/* Multiline block collections share one header-capped left guide rail for both properties and indexed items */
+:is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true'])[data-value-kind='block'] > .md-yaml-entry-content {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 4px;
+}
+
+.md-yaml-property:not([data-in-flow='true'])[data-value-kind='block'] > .md-yaml-entry-content > .md-yaml-key,
+.md-yaml-item:not([data-in-flow='true'])[data-value-kind='block'] > .md-yaml-entry-content > .md-yaml-index {
+  width: fit-content;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:is(.md-yaml-property, .md-yaml-item):not([data-in-flow='true'])[data-value-kind='block']
+  > .md-yaml-entry-content > :is(.md-yaml-map, .md-yaml-array) {
+  margin-inline-start: -13px;
+  padding-inline-start: 20px;
+  border-inline-start: 1.5px solid var(--editor-border-color);
+}
+
+/* --- Framed inline entries (data-in-flow="true" ONLY: same-depth siblings match, deeper levels lighten to white) --- */
+
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'] {
+  --yaml-tint: 5.4%;
+  --yaml-bg: color-mix(in srgb, var(--editor-menu-bg), var(--yaml-seed) var(--yaml-tint));
+  box-sizing: border-box;
+  position: relative;
+  margin: 0;
+  max-width: 100%;
+  border: 1px solid var(--yaml-border);
+  background: var(--yaml-bg);
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.markdown-editor [data-in-flow='true']
+  :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'] {
+  --yaml-tint: 3%;
+}
+
+.markdown-editor [data-in-flow='true']
+  [data-in-flow='true']
+  :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'] {
+  --yaml-tint: 1.2%;
+}
+
+.markdown-editor [data-in-flow='true']
+  [data-in-flow='true']
+  [data-in-flow='true']
+  :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'] {
+  --yaml-tint: 0%;
+}
+
+/* Leaf inline capsules (d = 0, 24px tall, R = 12px concentric with 18x18 button & 16x16 checkbox) */
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='scalar'] {
+  min-height: 24px;
+  padding-block: 2px;
+  padding-inline: 2px 8px;
+  border-radius: 12px;
+}
+
+.markdown-editor .md-yaml-item[data-in-flow='true'][data-value-kind='scalar'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='scalar']:hover {
+  background: color-mix(in srgb, var(--yaml-bg), var(--yaml-seed) 3%);
+}
+
+.markdown-editor .md-yaml-property[data-in-flow='true'][data-value-kind='scalar'] {
+  display: inline-grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 2px;
+}
+
+/* Concentric right cap when a leaf capsule ends with the 16x16 circular boolean (1 + 3 + 8 = 12px) */
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='scalar'][data-value-type='boolean'] {
+  padding-inline-end: 3px;
+}
+
+.markdown-editor .md-yaml-item[data-in-flow='true'][data-value-kind='scalar'][data-value-type='boolean'] {
+  gap: 3px;
+}
+
+:is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'] > .md-yaml-type {
+  width: 18px;
+  height: 18px;
+}
+
+.md-yaml-item[data-in-flow='true'][data-value-kind='scalar'] > .md-yaml-entry-content {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.md-yaml-property[data-in-flow='true'] > .md-yaml-entry-content {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Compound inline containers (d >= 1): one unified rounded-rectangle rule for inline items and inline properties */
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='flow'] {
+  display: inline-grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: first baseline;
+  column-gap: 3px;
+  width: fit-content;
+  padding: 3px 5px;
+  border-radius: 11px;
+}
+
+.md-yaml-item[data-in-flow='true'][data-value-kind='flow'] > .md-yaml-entry-content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: first baseline;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.md-yaml-property[data-in-flow='true'][data-value-kind='flow'] > .md-yaml-entry-content {
+  align-items: first baseline;
+  column-gap: 4px;
+}
+
+/* Concentric corner radius stepping (+3px per nested inline container matching 3px block padding) */
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='flow']:has(
+  > .md-yaml-entry-content [data-in-flow='true'][data-value-kind='flow']
+) {
+  border-radius: 14px;
+}
+
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='flow']:has(
+  > .md-yaml-entry-content [data-in-flow='true'][data-value-kind='flow']
+  [data-in-flow='true'][data-value-kind='flow']
+) {
+  border-radius: 17px;
+}
+
+/* --- Block sequence index badges & editable keys / scalars --- */
+
+.md-yaml-index {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-width: calc(var(--yaml-index-digits, 1) * 1ch + 10.4px);
+  min-height: 24px;
+  padding: 2px 1px;
+  color: var(--editor-muted-color);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
+  user-select: none;
+  cursor: default;
+}
+
+.md-yaml-index-bracket {
+  width: 3.2px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--editor-subtle-color);
+}
+
+.md-yaml-index-number {
+  align-self: baseline;
+  min-width: 1ch;
+  padding-inline: 1px;
+  text-align: center;
+}
+
+.md-yaml-key,
+.md-yaml-scalar:not(.md-yaml-boolean) {
+  box-sizing: border-box;
+  position: relative;
+  min-width: 0;
+  min-height: 20px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.md-yaml-property:not([data-in-flow='true']) > .md-yaml-entry-content > .md-yaml-key {
+  min-height: 24px;
+  padding: 2px 4px;
+  color: var(--editor-muted-color);
+  font-weight: 500;
+}
+
+.md-yaml-property[data-in-flow='true'] > .md-yaml-entry-content > .md-yaml-key {
+  min-width: 16px;
+  min-height: 18px;
+  line-height: 18px;
+  padding-block: 0;
+  padding-inline: 1px 6px;
+  background: linear-gradient(var(--yaml-divider), var(--yaml-divider)) right center / 1px 11px no-repeat;
+  color: var(--editor-muted-color);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.md-yaml-property:not([data-in-flow='true'])
+  > .md-yaml-entry-content > .md-yaml-scalar:not(.md-yaml-key):not(.md-yaml-boolean),
+.md-yaml-item:not([data-in-flow='true'])
+  > .md-yaml-entry-content > .md-yaml-scalar:not(.md-yaml-boolean) {
+  width: 100%;
+  min-height: 24px;
+  padding: 2px 4px;
+}
+
+.md-yaml-property:not([data-in-flow='true']) > .md-yaml-entry-content > .md-yaml-boolean,
+.md-yaml-item:not([data-in-flow='true']) > .md-yaml-entry-content > .md-yaml-boolean {
+  min-height: 24px;
+  padding-inline: 4px;
+}
+
+:is(.md-yaml-item, .md-yaml-property)[data-in-flow='true']
+  > .md-yaml-entry-content > .md-yaml-scalar:not(.md-yaml-key):not(.md-yaml-boolean) {
+  min-width: 18px;
+  min-height: 18px;
+  line-height: 18px;
+  padding: 0 1px;
+  font-size: 13px;
+}
+
+/* Placeholders: out-of-flow ::before keeps native caret geometry; zero-height ::after sizes fit-content capsules */
+.md-yaml-scalar[data-placeholder]::before {
+  position: absolute;
+  content: attr(data-placeholder);
+  color: var(--editor-placeholder-color);
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.md-yaml-scalar[data-placeholder]::after {
+  display: block;
+  height: 0;
+  line-height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  content: attr(data-placeholder);
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.md-yaml-scalar.md-yaml-null[data-placeholder]::before {
+  font-style: italic;
+}
+
+/* Focused inline text-field border; surface fill remains neutral so selection owns blue fill */
+.markdown-editor :is(.md-yaml-item, .md-yaml-property)[data-in-flow='true'][data-value-kind='scalar']:has(
+  > .md-yaml-entry-content > :not(.md-yaml-boolean)[data-focused='true']
+) {
+  border-color: color-mix(in srgb, var(--editor-focus-color) 55%, transparent);
+}
+
+.md-yaml-number,
+.md-yaml-boolean,
+.md-yaml-null {
+  font-variant-numeric: tabular-nums;
+}
+
+.md-yaml-number {
+  font-family: var(--editor-monospace);
+  font-size: 12.5px;
+}
+
+.md-yaml-null {
+  color: var(--editor-muted-color);
+  font-family: var(--editor-monospace);
+  font-size: 12.5px;
+}
+
+/* --- Append controls (.md-yaml-add) --- */
+
+.md-yaml-map:not([data-flow='true']) > .md-yaml-add,
+.md-yaml-array:not([data-flow='true']) > .md-yaml-add {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+.markdown-editor .frontmatter-add-button {
+  height: 22px;
+  min-height: 0;
+  padding-block: 0;
+  padding-inline: 6px 8px;
+  gap: 4px;
+  border-radius: 999px;
+  color: var(--editor-subtle-color);
+  font-size: 12px;
+  font-weight: 400;
+  transition: opacity 120ms ease, background-color 100ms ease, color 100ms ease;
+}
+
+.markdown-editor .frontmatter-add-button:hover:not(:disabled) {
+  background: var(--yaml-control-hover-bg);
+  color: var(--editor-text-color);
+}
+
+.markdown-editor .frontmatter-add-button svg { width: 11.5px; height: 11.5px; }
+
+:is(.md-yaml-map, .md-yaml-array)[data-flow='true'] > .md-yaml-add {
+  display: flex;
+  align-items: center;
+}
+
+:is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='false'] > .md-yaml-add {
+  margin-inline-start: -1px;
+}
+
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='false']
+  > .md-yaml-add > .frontmatter-add-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  opacity: 0.55;
+}
+
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='false']:hover
+  > .md-yaml-add > .frontmatter-add-button,
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='false']
+  > .md-yaml-add > .frontmatter-add-button:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='false']
+  > .md-yaml-add > .frontmatter-add-button > .frontmatter-add-label {
+  display: none;
+}
+
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='true']
+  > .md-yaml-add > .frontmatter-add-button {
+  height: 24px;
+  padding-block: 0;
+  padding-inline: 6px 10px;
+  border: 1px solid var(--yaml-border);
+  background: var(--editor-menu-bg);
+  color: var(--editor-muted-color);
+}
+
+.markdown-editor :is(.md-yaml-map, .md-yaml-array)[data-flow='true'][data-empty='true']
+  > .md-yaml-add > .frontmatter-add-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--editor-menu-bg), var(--yaml-seed) 4.5%);
+  color: var(--editor-text-color);
+}
 
 /* A zero-size prefix must not contribute a full inherited line-height strut. */
 .md-yaml-literal-prefix { line-height: 0; }
 .md-yaml-literal-prefix.md-revealed { line-height: inherit; }
 
 @media (max-width: 520px) {
-  .markdown-editor .md-frontmatter { --yaml-key-width: 96px; }
-  .md-yaml-entry-content { column-gap: 6px; }
+  .markdown-editor .md-frontmatter { --yaml-key-width: 92px; }
+  .md-yaml-property:not([data-in-flow='true']) > .md-yaml-entry-content { column-gap: 6px; }
 }

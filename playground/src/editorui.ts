@@ -150,7 +150,17 @@ class EditorUI implements IDestroyable {
     const reset = this.propertyGroup(event, valueTypes.filter(([each]) => event.conversions[each] === 'reset'), 'Reset to');
     const items: Menu.Item[] = [...convert];
     if (convert.length && reset.length) items.push({ type: 'separator' });
-    items.push(...reset,
+    items.push(...reset);
+    if (event.flow !== null) {
+      items.push(
+        { type: 'separator' },
+        {
+          type: 'action', label: 'Inline flow', icon: icons.inlineFlow, checked: event.flow,
+          run: () => event.setFlow(!event.flow),
+        },
+      );
+    }
+    items.push(
       { type: 'separator' },
       { type: 'action', label: 'Insert above', icon: icons.above, run: () => event.insertProperty('above') },
       { type: 'action', label: 'Insert below', icon: icons.below, run: () => event.insertProperty('below') },

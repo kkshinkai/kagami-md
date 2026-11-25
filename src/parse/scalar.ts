@@ -14,8 +14,18 @@ type ScalarTag = 'string' | 'integer' | 'float' | 'boolean' | 'null';
 
 /** Scalar inference belongs to the same YAML reader as file import. */
 export function inferYAMLScalar(source: string): ScalarTag {
+  if (source.includes('\n') || source.includes('\r')) return 'string';
   const document = yamlParser.parseFile(`---\nvalue: ${source}\n---`).document;
-  if (!(document.frontMatter instanceof YAMLFrontMatterSyntax)) return 'string';
-  const value = document.frontMatter.root.children[0]?.value;
-  return value instanceof YAMLScalarSyntax ? value.tag : 'string';
+  if (!(document.frontMatter instanceof YAMLFrontMatterSyntax) || document.children.length > 0) return 'string';
+  const frontMatterSpelling = document.frontMatter.spelling;
+  if (frontMatterSpelling.commentBefore || frontMatterSpelling.trailingComment) return 'string';
+  if (document.frontMatter.root.children.length !== 1) return 'string';
+  const pair = document.frontMatter.root.children[0]!;
+  if (pair.key.spelling.commentBefore || pair.key.spelling.trailingComment) return 'string';
+  const value = pair.value;
+  if (!(value instanceof YAMLScalarSyntax) || value.spelling.commentBefore || value.spelling.trailingComment) {
+    return 'string';
+  }
+  if (value.tag !== 'string' && value.content !== source) return 'string';
+  return value.tag;
 }

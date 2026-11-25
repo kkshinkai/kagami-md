@@ -5,16 +5,16 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-import { schema } from '../types/schema.js';
-import { Fragment, Slice, type Node } from 'prosemirror-model';
+import { Fragment, Slice, type Node, type NodeType } from 'prosemirror-model';
 import { isolateHistory } from '../state/history.js';
 import { type EditorState, type Transaction } from 'prosemirror-state';
 import { insert, split, replace, remove, carrier } from '../transform/transform.js';
-import { defaultUnparseOptions, unparseSlice, type unparse } from '../unparse/unparse.js';
+import { unparseSlice, type unparse } from '../unparse/unparse.js';
+import { adaptToYAMLTarget, isYAMLTransferNode, yamlEntriesToCodeBlock } from '../unparse/yamltransfer.js';
 import { Source } from '../source/index.js';
-import { defaultParser, getParser } from '../state/parser.js';
+import { getParser } from '../state/parser.js';
 import type { Parser } from '../syntax/index.js';
-import { parseBlocks } from '../parse/parse.js';
+import { schema } from '../types/schema.js';
 import {
   BlockSelection,
   isBlockRange,
@@ -27,6 +27,7 @@ import {
   type SelectableBlock,
 } from '../state/selection.js';
 
+/** Candidate drop slot resolved against a document's selectable block tree. */
 export interface DropIntent {
   readonly parent: SelectableBlock | null;
   readonly parentPos: number;
@@ -34,52 +35,105 @@ export interface DropIntent {
   readonly boundary: number;
 }
 
-function contentStart(parent: SelectableBlock | null): number {
-  if (!parent) return 0;
-  if (parent.node.type === schema.nodes.yamlPair)
-    return parent.from + 2 + parent.node.child(0).nodeSize;
-  return (
-    parent.from +
-    1 +
-    ([schema.nodes.callout, schema.nodes.footnoteDefinition].includes(parent.node.type)
-      ? parent.node.child(0).nodeSize
-      : 0)
+/** Whether `payload` consists solely of list items eligible to join `parent` without a wrapper list. */
+function canDirectListTarget(parent: Node, payload: readonly SelectableBlock[]): boolean {
+  if (!parent.type.isInGroup('list')) return false;
+  if (!payload.every(block => block.node.type === schema.nodes.listItem)) return false;
+  return !(
+    parent.type === schema.nodes.orderedList &&
+    payload.some(block => block.node.attrs.checked !== null)
   );
 }
 
-/** Moving across the YAML boundary changes the value's representation. A string's
- * characters become Markdown only when it leaves YAML; a Markdown block becomes
- * one scalar string when it enters a collection. */
-function yamlPayload(doc: Node, payload: readonly SelectableBlock[], parent: Node,
-  options: unparse.Options, parser: Parser): Fragment | null {
-  const yaml =
-    parent.type === schema.nodes.yamlMapping || parent.type === schema.nodes.yamlSequence;
+/** Create default placeholder nodes for `types`, or `null` if empty or any type fails to fill. */
+function fillAllTypes(types: readonly NodeType[]): Fragment | null {
+  if (types.length === 0) return null;
   const nodes: Node[] = [];
+  for (const type of types) {
+    const filled = type.createAndFill();
+    if (!filled) return null;
+    nodes.push(filled);
+  }
+  return Fragment.fromArray(nodes);
+}
+
+/** Moving across the YAML boundary converts YAML entries to a `yaml` codeBlock in the body,
+ * parses `yaml` codeBlocks back into structured YAML entries, and encodes other Markdown blocks
+ * as scalar string entries inside a YAML collection. */
+function yamlDropPayload(
+  doc: Node,
+  payload: readonly SelectableBlock[],
+  targetParent: Node,
+  options: unparse.Options,
+  parser: Parser,
+): Fragment {
   const documentSchema = doc.type.schema;
-  for (const block of payload) {
-    let value = block.node.type === schema.nodes.yamlPair ? block.node.child(1) : block.node;
-    if (yaml) {
-      if (!value.type.isInGroup('yamlNode')) {
-        const source = unparseSlice(new Slice(Fragment.from(value), 0, 0), doc.resolve(block.from), options);
-        value = documentSchema.nodes.yamlScalar.create({ tag: 'string' }, source ? documentSchema.text(source) : null);
-      }
-      if (parent.type === schema.nodes.yamlSequence) nodes.push(value);
-      else if (block.node.type === schema.nodes.yamlPair) nodes.push(block.node);
-      else
-        nodes.push(
-          documentSchema.nodes.yamlPair.create(null,
-            [documentSchema.nodes.yamlScalar.create({ tag: 'string' }), value]),
-        );
-    } else if (value.type.isInGroup('yamlNode')) {
-      if (value.type !== schema.nodes.yamlScalar || value.attrs.tag !== 'string') return null;
-      const source = value.textContent;
-      const content = parseBlocks(
-        parser.parseBlocks(source),
-        source,
-        documentSchema,
-      );
-      nodes.push(...(content.size ? content.content : [documentSchema.nodes.paragraph.create()]));
-    } else nodes.push(value);
+  const { yamlMapping, yamlSequence } = documentSchema.nodes;
+  if (targetParent.type === yamlMapping || targetParent.type === yamlSequence) {
+    const target = targetParent.type === yamlSequence ? 'sequence' : 'mapping';
+    const nodes: Node[] = [];
+    for (const block of payload) {
+      const adapted = adaptToYAMLTarget([block.node], target, documentSchema, {
+        parser,
+        blockText: node => unparseSlice(new Slice(Fragment.from(node), 0, 0), doc.resolve(block.from), options),
+      });
+      nodes.push(...adapted.nodes);
+    }
+    return Fragment.fromArray(nodes);
+  }
+  return encodeDroppedBodyBlocks(doc, payload);
+}
+
+/** Append one body block into `nodes`, grouping contiguous standalone `listItem`s under their original list shell. */
+function appendBodyBlock(
+  doc: Node,
+  block: SelectableBlock,
+  directList: boolean,
+  nodes: Node[],
+  shellPos: number | null,
+): number | null {
+  if (block.node.type !== schema.nodes.listItem || directList) {
+    nodes.push(block.node);
+    return null;
+  }
+  const original = doc.resolve(block.from);
+  const previous = nodes.at(-1);
+  if (shellPos === original.before() && previous) {
+    nodes[nodes.length - 1] = previous.copy(previous.content.append(Fragment.from(block.node)));
+  } else {
+    nodes.push(carrier(original.parent, Fragment.from(block.node), original));
+  }
+  return original.before();
+}
+
+/** Convert contiguous YAML entry runs in `payload` into `yaml` code blocks while keeping body blocks wrapped in shells. */
+function encodeDroppedBodyBlocks(doc: Node, payload: readonly SelectableBlock[]): Fragment {
+  const documentSchema = doc.type.schema;
+  const { yamlSequence } = documentSchema.nodes;
+  const nodes: Node[] = [];
+  let shellPos: number | null = null;
+  for (let index = 0; index < payload.length;) {
+    const first = payload[index]!;
+    if (!isYAMLTransferNode(first.node)) {
+      shellPos = appendBodyBlock(doc, first, false, nodes, shellPos);
+      index++;
+      continue;
+    }
+    shellPos = null;
+    // Group maximal same-collection runs (`mapping` vs `sequence`) so adjacent properties serialize into one code block.
+    const fromSequence = doc.resolve(first.from).parent.type === yamlSequence;
+    const entries: Node[] = [first.node];
+    let end = index + 1;
+    while (end < payload.length) {
+      const next = payload[end]!;
+      const nextIsYAML = isYAMLTransferNode(next.node);
+      if (!nextIsYAML || (doc.resolve(next.from).parent.type === yamlSequence) !== fromSequence) break;
+      entries.push(next.node);
+      end++;
+    }
+    const code = yamlEntriesToCodeBlock(entries, documentSchema, fromSequence ? 'sequence' : 'mapping');
+    if (code) nodes.push(code);
+    index = end;
   }
   return Fragment.fromArray(nodes);
 }
@@ -91,9 +145,16 @@ export function blockDropIntents(doc: Node, source: BlockRange): DropIntent[] {
   return new DropTargets(doc, source).read();
 }
 
+/** Precomputed block frontier and lightweight schema probes reused across every candidate drop slot. */
 class DropTargets {
   private readonly payload: SelectableBlock[];
   private readonly blocks: SelectableBlock[];
+  private readonly hasYAMLPayload: boolean;
+  private readonly directItemProbe: Fragment | null;
+  private readonly siblingProbe: Fragment | null;
+  private readonly yamlMappingProbe: Fragment;
+  private readonly yamlSequenceProbe: Fragment;
+  private readonly yamlToBodyProbe: Fragment | null;
   private readonly result: DropIntent[] = [];
 
   constructor(
@@ -102,68 +163,76 @@ class DropTargets {
   ) {
     this.payload = selectedBlocks(doc, source);
     this.blocks = selectableBlocks(doc);
+    this.hasYAMLPayload = this.payload.some(block => isYAMLTransferNode(block.node));
+    const { codeBlock, listItem, yamlPair, yamlScalar } = doc.type.schema.nodes;
+    const siblingTypes = this.payload.map(block =>
+      block.node.type === listItem ? doc.resolve(block.from).parent.type : block.node.type,
+    );
+    const allListItems = this.payload.length > 0 && this.payload.every(block => block.node.type === listItem);
+    this.directItemProbe = allListItems ? fillAllTypes(this.payload.map(block => block.node.type)) : null;
+    this.siblingProbe = fillAllTypes(siblingTypes);
+    const emptyPair = yamlPair.createAndFill();
+    this.yamlMappingProbe = emptyPair ? Fragment.from(emptyPair) : Fragment.empty;
+    this.yamlSequenceProbe = Fragment.from(yamlScalar.create());
+    if (this.hasYAMLPayload) {
+      const bodyProbeNodes: Node[] = [];
+      for (let index = 0; index < this.payload.length; index++) {
+        const type = isYAMLTransferNode(this.payload[index]!.node) ? codeBlock : siblingTypes[index]!;
+        const filled = type.createAndFill();
+        if (filled) bodyProbeNodes.push(filled);
+      }
+      this.yamlToBodyProbe = bodyProbeNodes.length > 0 ? Fragment.fromArray(bodyProbeNodes) : null;
+    } else {
+      this.yamlToBodyProbe = null;
+    }
   }
 
+  /** Return all valid drop slots across root sequences and non-selected nested container sequences. */
   read(): DropIntent[] {
-    const roots = this.blocks.filter((block) => !block.parent);
+    if (this.payload.length === 0) return [];
+    const roots = this.blocks.filter(block => !block.parent);
     let indexOffset = 0;
     for (const sequence of rootBlockSequences(this.doc)) {
-      const children = roots.filter((block) => block.from >= sequence.from && block.to <= sequence.to);
+      const children = roots.filter(block => block.from >= sequence.from && block.to <= sequence.to);
       this.add(null, children, sequence.from, indexOffset);
       indexOffset += children.length;
     }
     for (const block of this.blocks) {
       if (block.from >= this.source.from && block.to <= this.source.to) continue;
-      if (block.node.type.isInGroup('container')) this.add(block, block.children);
-      else if (
-        block.node.type.isInGroup('yamlCollection') ||
-        (block.node.type === schema.nodes.yamlPair &&
-          block.node.child(1).type.isInGroup('yamlCollection'))
-      )
-        this.add(block, block.children);
+      if (block.sequence) this.add(block, block.children, block.sequence.from);
     }
     return this.result;
   }
 
-  add(
+  /** Select the precomputed schema probe that tests fit into `targetParent` without measuring text values. */
+  private probeFor(targetParent: Node, directItems: boolean): Fragment | null {
+    if (directItems) return this.directItemProbe;
+    const { yamlMapping, yamlSequence } = targetParent.type.schema.nodes;
+    if (targetParent.type === yamlMapping) return this.yamlMappingProbe;
+    if (targetParent.type === yamlSequence) return this.yamlSequenceProbe;
+    return this.hasYAMLPayload ? this.yamlToBodyProbe : this.siblingProbe;
+  }
+
+  /** Append every child boundary in `children` whose owning target accepts the dragged payload probe. */
+  private add(
     parent: SelectableBlock | null,
     children: readonly SelectableBlock[],
-    start = contentStart(parent),
+    start: number,
     indexOffset = 0,
-  ) {
+  ): void {
     for (let index = 0; index <= children.length; index++) {
       const boundary = children[index]?.from ?? children.at(-1)?.to ?? start;
       const at = this.doc.resolve(boundary);
-      const directItems =
-        at.parent.type.isInGroup('list') &&
-        this.payload.every((block) => block.node.type === schema.nodes.listItem) &&
-        !(
-          at.parent.type === schema.nodes.orderedList &&
-          this.payload.some((block) => block.node.attrs.checked !== null)
-        );
+      const directItems = canDirectListTarget(at.parent, this.payload);
       const target = at.parent.type.isInGroup('list') && !directItems ? this.doc.resolve(at.before()) : at;
-      const types = this.payload.map((block) =>
-        block.node.type === schema.nodes.listItem && !directItems
-          ? this.doc.resolve(block.from).parent.type
-          : block.node.type,
-      );
-      const crossingYAML =
-        target.parent.type.isInGroup('yamlCollection') ||
-        this.payload.some(
-          (block) => block.node.type === schema.nodes.yamlPair || block.node.type.isInGroup('yamlNode'),
-        );
-      const probe = crossingYAML
-        // The probe asks only whether the nodes fit, never what their strings say.
-        ? yamlPayload(this.doc, this.payload, target.parent, defaultUnparseOptions, defaultParser)
-        : Fragment.fromArray(
-            types.map((type) => type.createAndFill()).filter((node): node is Node => node !== null),
-          );
+      const probe = this.probeFor(target.parent, directItems);
       if (
         !probe ||
-        (!crossingYAML && probe.childCount !== types.length) ||
+        probe.childCount === 0 ||
         !target.parent.canReplace(target.index(), target.index(), probe)
-      )
+      ) {
         continue;
+      }
       this.result.push({ parent, parentPos: parent?.from ?? -1, index: indexOffset + index, boundary });
     }
   }
@@ -179,68 +248,42 @@ function outsideList(tr: Transaction, boundary: number): number {
   return boundary + 1;
 }
 
-/** Delete the dragged range and insert its slice at the mapped target, as
- * prosemirror-view's drop does. The selection comes from the insertion's range. */
-export function moveBlocks(state: EditorState, source: BlockRange, intent: DropIntent): Transaction | null {
-  const current = blockDropIntents(state.doc, source).find(
-    (candidate) =>
-      candidate.parentPos === intent.parentPos &&
-      candidate.index === intent.index &&
-      candidate.boundary === intent.boundary,
-  );
-  if (!current || (intent.boundary >= source.from && intent.boundary <= source.to)) return null;
-  const blocks = selectedBlocks(state.doc, source);
-  if (!blocks.length) return null;
-  const tr = isolateHistory(state.tr);
-  let target = intent.boundary;
-  let at = tr.doc.resolve(target);
-  const items = blocks.every((block) => block.node.type === schema.nodes.listItem);
-  if (items && !at.parent.type.isInGroup('list')) {
-    const kind = state.doc.resolve(blocks[0].from).parent.type;
-    if (at.nodeBefore?.type === kind && at.nodeBefore.type.isInGroup('list')) target--;
-    else if (at.nodeAfter?.type === kind && at.nodeAfter.type.isInGroup('list')) target++;
-    at = tr.doc.resolve(target);
+/** Step a boundary pointing outside a list into an immediately adjacent compatible list when dropping items. */
+function snapIntoAdjacentList(doc: Node, boundary: number, blocks: readonly SelectableBlock[]): number {
+  const allItems = blocks.every(block => block.node.type === schema.nodes.listItem);
+  const at = doc.resolve(boundary);
+  if (!allItems || at.parent.type.isInGroup('list')) return boundary;
+  const kind = doc.resolve(blocks[0]!.from).parent.type;
+  if (at.nodeBefore?.type === kind && at.nodeBefore.type.isInGroup('list')) return boundary - 1;
+  if (at.nodeAfter?.type === kind && at.nodeAfter.type.isInGroup('list')) return boundary + 1;
+  return boundary;
+}
+
+/** Materialize the moved blocks for Markdown containers, grouping contiguous standalone list items in carriers. */
+function buildDroppedFragment(
+  state: EditorState,
+  blocks: readonly SelectableBlock[],
+  targetParent: Node,
+  directList: boolean,
+): Fragment {
+  if (targetParent.type.isInGroup('yamlCollection') || blocks.some(block => isYAMLTransferNode(block.node))) {
+    return yamlDropPayload(state.doc, blocks, targetParent, Source.get(state).options, getParser(state));
   }
-  const direct =
-    at.parent.type.isInGroup('list') &&
-    items &&
-    !(
-      at.parent.type === schema.nodes.orderedList &&
-      blocks.some((block) => block.node.attrs.checked !== null)
-    );
-  const parent = !direct && at.parent.type.isInGroup('list') ? tr.doc.resolve(at.before()).parent : at.parent;
-  let content: Fragment;
-  if (
-    parent.type.isInGroup('yamlCollection') ||
-    blocks.some(
-      (block) => block.node.type === schema.nodes.yamlPair || block.node.type.isInGroup('yamlNode'),
-    )
-  ) {
-    const converted = yamlPayload(state.doc, blocks, parent, Source.get(state).options, getParser(state));
-    if (!converted) return null;
-    content = converted;
-  } else {
-    const nodes: Node[] = [];
-    let shell: number | null = null;
-    for (const block of blocks) {
-      if (block.node.type !== schema.nodes.listItem || direct) {
-        nodes.push(block.node);
-        shell = null;
-        continue;
-      }
-      const original = state.doc.resolve(block.from);
-      const previous = nodes.at(-1);
-      if (shell === original.before() && previous)
-        nodes[nodes.length - 1] = previous.copy(previous.content.append(Fragment.from(block.node)));
-      else nodes.push(carrier(original.parent, Fragment.from(block.node), original));
-      shell = original.before();
-    }
-    content = Fragment.fromArray(nodes);
+  const nodes: Node[] = [];
+  let shellPos: number | null = null;
+  for (const block of blocks) {
+    shellPos = appendBodyBlock(state.doc, block, directList, nodes, shellPos);
   }
-  // Isolate the storage edges of a partial list before deleting the range.
-  // Splitting assigns its back spelling to the selected end, not the leftover head.
-  let from = source.from;
-  let to = source.to;
+  return Fragment.fromArray(nodes);
+}
+
+/** Isolate the storage edges of a partially selected list so tail spelling stays with the removed slice. */
+function splitPartialListEdges(
+  tr: Transaction,
+  range: BlockRange,
+  target: number,
+): { readonly range: BlockRange; readonly target: number } {
+  let { from, to } = range;
   const finish = tr.doc.resolve(to);
   if (finish.parent.type.isInGroup('list') && finish.index() < finish.parent.childCount) {
     const step = tr.steps.length;
@@ -252,18 +295,30 @@ export function moveBlocks(state: EditorState, source: BlockRange, intent: DropI
     const step = tr.steps.length;
     split(tr, from, 1);
     target = tr.mapping.slice(step).map(target, -1);
+    // Splitting at `from` inserts a 2-token `</list><list>` seam before `from`, shifting the range right.
     from += 2;
     to += 2;
   }
-  // Checkboxes retain their editable head when their body enters or leaves.
+  return { range: { from, to }, target };
+}
+
+/** Keep leading paragraph carriers on task items whose head would become empty or non-paragraph during a move. */
+function preserveTaskItemCarriers(
+  tr: Transaction,
+  range: BlockRange,
+  target: number,
+  firstInserted: Node | null,
+): { readonly range: BlockRange; readonly target: number } {
+  let { from, to } = range;
   const destination = tr.doc.resolve(target);
   if (
     destination.parent.type === schema.nodes.listItem &&
     destination.parent.attrs.checked !== null &&
     destination.index() === 0 &&
-    content.firstChild?.type !== schema.nodes.paragraph
+    firstInserted?.type !== schema.nodes.paragraph
   ) {
     const step = tr.steps.length;
+    // Task items retain `checked` only when child 0 is a paragraph; seed an empty paragraph before non-paragraph drops.
     insert(tr, target, tr.doc.type.schema.nodes.paragraph, {});
     target += 2;
     from = tr.mapping.slice(step).map(from, 1);
@@ -282,27 +337,56 @@ export function moveBlocks(state: EditorState, source: BlockRange, intent: DropI
     from += 2;
     to += 2;
   }
-  const storage = blockStorageRange(tr.doc, { from, to });
-  const beforeDelete = tr.steps.length;
-  remove(tr, storage.from, storage.to);
-  target = tr.mapping.slice(beforeDelete).map(target);
-  if (!direct) target = outsideList(tr, target);
-  const beforeInsert = tr.steps.length;
-  const doc = tr.doc;
-  replace(tr, target, target, new Slice(content, 0, 0));
-  if (tr.doc.eq(doc)) return null;
-  let start = target;
-  let end = target;
-  tr.mapping.maps[beforeInsert].forEach((_from, _to, newFrom, newTo) => {
+  return { range: { from, to }, target };
+}
+
+/** Map the inserted byte range across post-insert steps into a complete `BlockSelection`. */
+function selectInsertedBlockRange(tr: Transaction, beforeInsertStep: number, fallbackPos: number): BlockSelection {
+  let start = fallbackPos;
+  let end = fallbackPos;
+  tr.mapping.maps[beforeInsertStep]!.forEach((_from, _to, newFrom, newTo) => {
     start = newFrom;
     end = newTo;
   });
-  const afterInsert = tr.mapping.slice(beforeInsert + 1);
+  const afterInsert = tr.mapping.slice(beforeInsertStep + 1);
   const inserted = selectedBlocks(tr.doc, { from: afterInsert.map(start, 1), to: afterInsert.map(end, -1) });
   const first = inserted[0];
   const last = inserted.at(-1);
   if (!first || !last) throw new RangeError('The drop did not insert selectable blocks');
   const range = commonBlockRange(tr.doc, first, last);
-  tr.setSelection(BlockSelection.create(tr.doc, range.from, range.to));
+  return BlockSelection.create(tr.doc, range.from, range.to);
+}
+
+/** Delete the dragged range and insert its slice at the mapped target, as
+ * prosemirror-view's drop does. The selection comes from the insertion's range. */
+export function moveBlocks(state: EditorState, source: BlockRange, intent: DropIntent): Transaction | null {
+  if (intent.boundary >= source.from && intent.boundary <= source.to) return null;
+  const current = blockDropIntents(state.doc, source).find(
+    candidate =>
+      candidate.parentPos === intent.parentPos &&
+      candidate.index === intent.index &&
+      candidate.boundary === intent.boundary,
+  );
+  if (!current) return null;
+  const blocks = selectedBlocks(state.doc, source);
+  if (!blocks.length) return null;
+  const tr = isolateHistory(state.tr);
+  let target = snapIntoAdjacentList(state.doc, intent.boundary, blocks);
+  const at = tr.doc.resolve(target);
+  const direct = canDirectListTarget(at.parent, blocks);
+  const parent = !direct && at.parent.type.isInGroup('list') ? tr.doc.resolve(at.before()).parent : at.parent;
+  const content = buildDroppedFragment(state, blocks, parent, direct);
+  const splitState = splitPartialListEdges(tr, source, target);
+  const preserved = preserveTaskItemCarriers(tr, splitState.range, splitState.target, content.firstChild ?? null);
+  const storage = blockStorageRange(tr.doc, preserved.range);
+  const beforeDelete = tr.steps.length;
+  remove(tr, storage.from, storage.to);
+  target = tr.mapping.slice(beforeDelete).map(preserved.target);
+  if (!direct) target = outsideList(tr, target);
+  const beforeInsert = tr.steps.length;
+  const beforeDoc = tr.doc;
+  replace(tr, target, target, new Slice(content, 0, 0));
+  if (tr.doc.eq(beforeDoc)) return null;
+  tr.setSelection(selectInsertedBlockRange(tr, beforeInsert, target));
   return tr.setMeta('uiEvent', 'drop');
 }

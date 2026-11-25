@@ -100,12 +100,16 @@ export function setAttributes(tr: Transform, position: number, attrs: Attrs): vo
 /** Adjust recorded spelling only where a change of meaning requires it. */
 export function changedSpelling(type: NodeType, meaning: Attrs, value: unknown, content?: Fragment): unknown {
   const types = type.schema.nodes;
-  if (type === types.yamlScalar && meaning.tag === 'string' && content &&
+  if (type === types.yamlScalar && meaning.tag === 'string' && content && content.size > 0 &&
       inferYAMLScalar(content.textBetween(0, content.size)) !== 'string') {
     return { ...(value as object | null), style: 'doubleQuoted' };
   }
   if (!value || typeof value !== 'object') return null;
   const spelling = value as Record<string, unknown>;
+  if ((type === types.yamlMapping || type === types.yamlSequence) && typeof meaning.flow === 'boolean' &&
+      spelling.flow !== meaning.flow) {
+    return { ...spelling, flow: meaning.flow };
+  }
   if (type === types.callout && typeof meaning.calloutType === 'string' &&
       (typeof spelling.declaration !== 'string' ||
       spelling.declaration.toLowerCase() !== `[!${meaning.calloutType}]`)) {

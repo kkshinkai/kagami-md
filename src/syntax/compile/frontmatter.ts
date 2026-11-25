@@ -144,6 +144,11 @@ function fence(this: CompileContext, token: Token): undefined {
   fences.push(token);
 }
 
+/** Read one YAML value from source text, rejecting unreadable constructs such as anchors or aliases. */
+export function readYAML(source: string): YAMLNodeSyntax | undefined {
+  return new YAMLReader(source, 0).readValue();
+}
+
 /** The YAML tree and document spelling between front matter fences. */
 interface YAMLReading {
   root: YAMLMappingSyntax;
@@ -165,6 +170,23 @@ class YAMLReader {
       uniqueKeys: false,
       version: '1.2',
     });
+  }
+
+  /** Read one YAML value without expecting an enclosing mapping. */
+  readValue(): YAMLNodeSyntax | undefined {
+    if (this.document.errors.length > 0 || this.document.warnings.length > 0 || !this.document.contents) {
+      return undefined;
+    }
+
+    try {
+      return this.one(this.document.contents);
+    } catch (error) {
+      if (error instanceof Unreadable) {
+        return undefined;
+      }
+
+      throw error;
+    }
   }
 
   /** Read a mapping, preserving unsupported YAML as raw front matter. */

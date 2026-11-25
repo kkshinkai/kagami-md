@@ -11,6 +11,7 @@ import { CellSelection, handlePaste, isInTable } from 'prosemirror-tables';
 import type { EditorView } from 'prosemirror-view';
 import { isolateHistory } from '../state/history.js';
 import { replace } from '../transform/transform.js';
+import { yamlSliceToBody } from '../unparse/yamltransfer.js';
 import { cellPasteContent, plainTextSlice } from '../editor/paste.js';
 
 /** Paste a native rectangle, or read ordinary content as the receiving GFM cell's text. */
@@ -19,6 +20,7 @@ export function tablePaste(view: EditorView, event: ClipboardEvent, slice: Slice
   if (!isInTable(state)) return false;
   if (!slice.content.size)
     slice = plainTextSlice(event.clipboardData?.getData('text/plain') ?? '', state.selection.$from);
+  slice = yamlSliceToBody(slice, false).slice;
   if (!slice.content.size) return true;
 
   if (slice.content.content.every(node => node.type.spec.tableRole))

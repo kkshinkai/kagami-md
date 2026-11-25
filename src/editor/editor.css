@@ -263,8 +263,8 @@
 }
 
 .markdown-editor .ProseMirror .md-callout-type-control:has(:focus-visible) {
-  outline: 2px solid var(--callout-color);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--callout-color) 28%, transparent);
 }
 
 .markdown-editor .ProseMirror .md-callout-title {
@@ -401,8 +401,15 @@
   padding: 0;
   border: 1px solid var(--editor-muted-color);
   border-radius: 5px;
+  outline: none;
   background-color: transparent;
   box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+  transition: background-color 100ms ease, border-color 100ms ease, box-shadow 100ms ease;
+}
+
+.markdown-editor .ProseMirror .task-list-checkbox > input:hover:not(:disabled):not(:checked) {
+  border-color: var(--editor-text-color);
+  background-color: var(--editor-table-header-bg);
 }
 
 .markdown-editor .ProseMirror .task-list-checkbox > input:checked {
@@ -416,9 +423,15 @@
   background-repeat: no-repeat;
 }
 
+.markdown-editor .ProseMirror .task-list-checkbox > input:checked:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--editor-link-color) 86%, var(--editor-text-color));
+  border-color: color-mix(in srgb, var(--editor-link-color) 86%, var(--editor-text-color));
+}
+
 .markdown-editor .ProseMirror .task-list-checkbox > input:focus-visible {
-  outline: 2px solid var(--editor-link-color);
-  outline-offset: 2px;
+  outline: none;
+  border-color: var(--editor-focus-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--editor-focus-color) 28%, transparent);
 }
 
 .markdown-editor .ProseMirror .task-list-item:is([data-checked='true'], :has(> .task-list-checkbox:checked))
@@ -1163,8 +1176,8 @@
 
 :where(.markdown-editor) :where(.code-language-button, .callout-type-button, .frontmatter-type-button,
   .frontmatter-add-button, .frontmatter-header button):focus-visible {
-  outline: 2px solid var(--editor-selection-border);
-  outline-offset: 2px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--editor-focus-color) 28%, transparent);
 }
 
 :where(.markdown-editor) :where(.code-language-button, .frontmatter-type-button,

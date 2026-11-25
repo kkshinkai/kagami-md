@@ -7,11 +7,12 @@
 
 import type { Node } from 'prosemirror-model';
 import { Plugin, type EditorState, type Transaction } from 'prosemirror-state';
+import type { PluginView } from 'prosemirror-state';
 import type { Decoration, DecorationSource, EditorView, NodeView, ViewMutationRecord } from 'prosemirror-view';
 import { ControlHold } from '../editor/hold.js';
 import type { EditorLoc } from '../source/index.js';
 import {
-  registerBlockView, registerNodeView, nodeView, type BlockView, type HandleTarget,
+  registerBlockView, registerNodeView, syncNodeViewSequence, nodeView, type BlockView, type HandleTarget,
   type ChildSequence
 } from '../editor/blockview.js';
 import type { DOMNode } from '../editor/dom.js';
@@ -20,42 +21,131 @@ import { routeHistoryKey } from '../editor/input.js';
 import { canRunCommand } from '../state/input.js';
 import { schema } from '../types/schema.js';
 import {
-  changeFrontmatterType, convertedFrontmatterValue, frontmatterTypeIcons, frontmatterValueType,
-  insertFrontmatterEntry, removeFrontmatterEntry, setFrontmatterBoolean,
+  activeScalarPos, changeFrontmatterType, convertedFrontmatterValue, frontmatterTypeIcons, frontmatterValueType,
+  insertFrontmatterEntry, isFlowCollection, isYAMLCollection, removeFrontmatterEntry,
+  setFrontmatterBoolean, setFrontmatterFlow,
 } from './frontmatter.js';
 import { FrontmatterView } from './frontmatterview.js';
+
+/** Plugin view coordinating property view synchronization, editable toggles, and scalar focus markers. */
+class PropertyViewsController implements PluginView {
+  private editable: boolean;
+  private focused: HTMLElement | null = null;
+  private keyboardFocus = false;
+
+  constructor(
+    private readonly view: EditorView,
+    private readonly nodes: ReadonlySet<PropertyView>,
+  ) {
+    this.editable = view.editable;
+    view.dom.addEventListener('pointerdown', this.onPointer, true);
+    view.dom.addEventListener('mousedown', this.onPointer, true);
+    view.dom.addEventListener('keydown', this.onKeyDown, true);
+    view.dom.addEventListener('focus', this.syncFocus, true);
+    view.dom.addEventListener('blur', this.syncFocus, true);
+    this.syncFocus();
+  }
+
+  /** Sync mounted property views and focus indicators after an editor update. */
+  update(_view: EditorView, previous: EditorState): void {
+    const editableChanged = this.editable !== this.view.editable;
+    this.editable = this.view.editable;
+    for (const node of this.nodes) {
+      if (node.view !== this.view) continue;
+      if (node instanceof FrontmatterView) node.refresh(previous, editableChanged);
+      else node.sync();
+    }
+    this.syncFocus();
+  }
+
+  /** Detach DOM focus listeners and clear active scalar focus markers. */
+  destroy(): void {
+    this.view.dom.removeEventListener('pointerdown', this.onPointer, true);
+    this.view.dom.removeEventListener('mousedown', this.onPointer, true);
+    this.view.dom.removeEventListener('keydown', this.onKeyDown, true);
+    this.view.dom.removeEventListener('focus', this.syncFocus, true);
+    this.view.dom.removeEventListener('blur', this.syncFocus, true);
+    if (this.focused) {
+      delete this.focused.dataset.focused;
+      delete this.focused.dataset.focusVisible;
+    }
+    this.focused = null;
+  }
+
+  /** Clear keyboard-visible ring when focus changes originate from pointer presses. */
+  private onPointer = (): void => {
+    this.keyboardFocus = false;
+    this.syncFocus();
+  };
+
+  /** Reveal keyboard focus ring when non-modifier navigation enters or moves inside front matter. */
+  private onKeyDown = (event: KeyboardEvent): void => {
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (event.key === 'Shift' || event.key === 'Meta' || event.key === 'Control' || event.key === 'Alt') return;
+    this.keyboardFocus = true;
+    this.syncFocus();
+  };
+
+  /** Mirror active scalar focus onto `data-focused` and keyboard modality onto `data-focus-visible`. */
+  private syncFocus = (): void => {
+    const next = focusedScalarElement(this.view);
+    if (next !== this.focused) {
+      if (this.focused) {
+        delete this.focused.dataset.focused;
+        delete this.focused.dataset.focusVisible;
+      }
+      this.focused = next;
+      if (this.focused) this.focused.dataset.focused = 'true';
+    }
+    if (this.focused) {
+      if (this.keyboardFocus) this.focused.dataset.focusVisible = 'true';
+      else delete this.focused.dataset.focusVisible;
+    }
+  };
+}
 
 /** Property views own their DOM; the plugin updates view-dependent presentation. */
 export function propertyViews(editor?: KagamiMD): Plugin {
   const nodes = new Set<PropertyView>();
-  const forget = (node: PropertyView) => { nodes.delete(node); };
+  const forget = (node: PropertyView): void => {
+    nodes.delete(node);
+  };
   const remember = <T extends PropertyView>(node: T): T => {
     nodes.add(node);
     return node;
   };
   return new Plugin({
-    props: { nodeViews: {
-      yamlFrontMatter: (node, view, getPos) => remember(new FrontmatterView(node, view, getPos, forget)),
-      yamlPair: (node, view, getPos) => remember(new EntryView(node, view, getPos, forget, editor)),
-      yamlScalar: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
-      yamlMapping: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
-      yamlSequence: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
-    } },
-    view(view) {
-      let editable = view.editable;
-      return {
-        update(_view, previous) {
-          const changed = editable !== view.editable;
-          editable = view.editable;
-          for (const node of nodes) {
-            if (node.view !== view) continue;
-            if (node instanceof FrontmatterView) node.refresh(previous, changed);
-            else node.sync();
-          }
-        },
-      };
+    props: {
+      nodeViews: {
+        yamlFrontMatter: (node, view, getPos) => remember(new FrontmatterView(node, view, getPos, forget)),
+        yamlPair: (node, view, getPos) => remember(new EntryView(node, view, getPos, forget, editor)),
+        yamlScalar: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
+        yamlMapping: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
+        yamlSequence: (node, view, getPos) => valueView(node, view, getPos, remember, forget, editor),
+      },
     },
+    view: view => new PropertyViewsController(view, nodes),
   });
+}
+
+/** Return the mounted scalar element for the `yamlScalar` node at `pos`. */
+export function scalarDOM(view: EditorView, pos: number): HTMLElement | null {
+  const dom = view.nodeDOM(pos);
+  if (!dom || dom.nodeType !== 1) return null;
+  const registered = nodeView(dom);
+  // Sequence items mount `EntryView` at `pos` wrapping the inner `ScalarView` or `BooleanView`, whereas map
+  // properties mount the key and value views directly at their scalar positions.
+  if (registered instanceof EntryView) return registered.scalarDOM;
+  if (registered instanceof ScalarView || registered instanceof BooleanView) return dom as HTMLElement;
+  if (registered) return null;
+  return dom as HTMLElement;
+}
+
+/** Return the currently focused YAML scalar DOM element when the editor holds focus, or `null`. */
+function focusedScalarElement(view: EditorView): HTMLElement | null {
+  if (view.isDestroyed || !view.hasFocus()) return null;
+  const pos = activeScalarPos(view.state);
+  return pos !== null ? scalarDOM(view, pos) : null;
 }
 
 /** The outline icon shared by the property controls and their frontmatter header. */
@@ -77,29 +167,132 @@ export interface PropertyView extends BlockView {
   sync(): void;
 }
 
+/** Placeholder text for an empty scalar slot, or null when content is present. */
+export function scalarPlaceholder(node: Node, isKey: boolean): string | null {
+  if (node.content.size > 0) return null;
+  if (isKey) return 'Property';
+  if (node.attrs.tag === 'null') return 'null';
+  return 'Empty';
+}
+
+/** Classification of an entry's value for layout and capsule styling. */
+export function entryValueKind(value: Node): 'scalar' | 'flow' | 'block' {
+  if (!isYAMLCollection(value)) return 'scalar';
+  return isFlowCollection(value) ? 'flow' : 'block';
+}
+
+/** Digit count string ('1', '2', ...) sizing the index column of a block sequence. */
+export function sequenceIndexDigits(childCount: number): string {
+  return String(String(Math.max(1, childCount)).length);
+}
+
+export interface SequenceIndexBadge {
+  readonly dom: HTMLSpanElement;
+  readonly label: HTMLSpanElement;
+}
+
+/** Build one bent half-bracket SVG flanking a block-sequence item's index badge. */
+function indexBracketIcon(document: Document, pathData: string): SVGSVGElement {
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'md-yaml-index-bracket');
+  svg.setAttribute('viewBox', '0 0 3.2 14');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'miter');
+  svg.setAttribute('aria-hidden', 'true');
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', pathData);
+  svg.append(path);
+  return svg;
+}
+
+/** Narrow bent-tick SVG bracketed 1-based index badge for an item in a block sequence. */
+export function createSequenceIndexBadge(document: Document, index = 1): SequenceIndexBadge {
+  const dom = document.createElement('span');
+  dom.className = 'md-yaml-index';
+  dom.contentEditable = 'false';
+  const label = document.createElement('span');
+  label.className = 'md-yaml-index-number';
+  label.textContent = String(index);
+  dom.append(
+    indexBracketIcon(document, 'M2.45 2.1.85 3.05v7.9l1.6.95'),
+    label,
+    indexBracketIcon(document, 'M.75 2.1l1.6.95v7.9l-1.6.95'),
+  );
+  return { dom, label };
+}
+
+/** Mount a property view for a scalar or collection, wrapping sequence items in an indexed `EntryView`. */
 function valueView(node: Node, view: EditorView, getPos: () => number | undefined,
   remember: <T extends PropertyView>(node: T) => T, forget: (node: PropertyView) => void,
   editor?: KagamiMD): NodeView {
-  let value: NodeView;
+  let value: PropertyView;
   if (node.type === schema.nodes.yamlScalar && node.attrs.tag === 'boolean')
     value = remember(new BooleanView(node, view, getPos, forget));
-  else if (node.type === schema.nodes.yamlMapping || node.type === schema.nodes.yamlSequence)
+  else if (isYAMLCollection(node))
     value = remember(new CollectionView(node, view, getPos, forget));
-  else {
-    const dom = view.dom.ownerDocument.createElement('div');
-    dom.className = `md-yaml-scalar md-yaml-${frontmatterValueType(node)}`;
-    dom.setAttribute('data-yaml-tag', node.attrs.tag);
-    value = { dom, contentDOM: dom };
-  }
+  else
+    value = remember(new ScalarView(node, view, getPos, forget));
   const pos = getPos();
   if (pos !== undefined) {
     const at = view.state.doc.resolve(pos);
-    if (at.parent.type === schema.nodes.yamlPair && !at.index())
-      (value.dom as HTMLElement).classList.add('md-yaml-key');
     if (at.parent.type === schema.nodes.yamlSequence)
       return remember(new EntryView(node, view, getPos, forget, editor, value));
   }
   return value;
+}
+
+/** Editable scalar field keeping its element, type class, and empty placeholder synchronized. */
+class ScalarView implements PropertyView {
+  readonly dom: HTMLDivElement;
+  readonly contentDOM: HTMLDivElement;
+  readonly brush = false;
+
+  constructor(private node: Node, readonly view: EditorView, private readonly getPos: () => number | undefined,
+    private readonly forget: (node: PropertyView) => void) {
+    this.dom = view.dom.ownerDocument.createElement('div');
+    this.contentDOM = this.dom;
+    registerNodeView(this);
+    this.sync();
+  }
+
+  nodePosition(): number | undefined {
+    return this.getPos();
+  }
+
+  update(node: Node): boolean {
+    if (node.type !== schema.nodes.yamlScalar || node.attrs.tag === 'boolean') return false;
+    this.node = node;
+    this.sync();
+    return true;
+  }
+
+  sync(): void {
+    const pos = this.getPos();
+    let isKey = false;
+    if (pos !== undefined && pos <= this.view.state.doc.content.size) {
+      const at = this.view.state.doc.resolve(pos);
+      isKey = at.parent.type === schema.nodes.yamlPair && at.index() === 0;
+    }
+    const base = `md-yaml-scalar md-yaml-${frontmatterValueType(this.node)}`;
+    const className = isKey ? `${base} md-yaml-key` : base;
+    if (this.dom.className !== className) this.dom.className = className;
+    const tag = String(this.node.attrs.tag);
+    if (this.dom.getAttribute('data-yaml-tag') !== tag) this.dom.setAttribute('data-yaml-tag', tag);
+    const placeholder = scalarPlaceholder(this.node, isKey);
+    if (placeholder === null) delete this.dom.dataset.placeholder;
+    else if (this.dom.dataset.placeholder !== placeholder) this.dom.dataset.placeholder = placeholder;
+  }
+
+  ignoreMutation(mutation: ViewMutationRecord): boolean {
+    return mutation.type === 'attributes' && mutation.target === this.dom;
+  }
+
+  destroy(): void {
+    this.forget(this);
+  }
 }
 
 /** A property owns its type button and keeps the value's native editable view. */
@@ -110,11 +303,13 @@ class EntryView implements PropertyView {
   private readonly mount: HTMLSpanElement;
   private readonly entry: HTMLDivElement;
   private readonly icon: SVGSVGElement;
+  private readonly indexBadge?: SequenceIndexBadge;
   private readonly controlHold: ControlHold;
+  private inFlowState = false;
   private destroyed = false;
 
   constructor(private node: Node, readonly view: EditorView, private readonly getPos: () => number | undefined,
-    private readonly forget: (node: PropertyView) => void, editor?: KagamiMD, private readonly value?: NodeView) {
+    private readonly forget: (node: PropertyView) => void, editor?: KagamiMD, private readonly value?: PropertyView) {
     const doc = view.dom.ownerDocument;
     this.dom = doc.createElement('div');
     this.dom.className = node.type === schema.nodes.yamlPair ? 'md-yaml-property' : 'md-yaml-item';
@@ -128,8 +323,11 @@ class EntryView implements PropertyView {
     this.entry = this.dom.appendChild(doc.createElement('div'));
     const content = this.entry;
     content.className = 'md-yaml-entry-content';
-    this.contentDOM = value ? value.contentDOM ?? undefined : content;
-    if (value) content.append(value.dom);
+    this.contentDOM = value ? value.contentDOM || undefined : content;
+    if (value) {
+      this.indexBadge = createSequenceIndexBadge(doc);
+      content.append(this.indexBadge.dom, value.dom);
+    }
     this.controlHold = new ControlHold({
       element: () => this.button,
       pos: () => this.getPos(),
@@ -154,10 +352,13 @@ class EntryView implements PropertyView {
           return true;
         });
       };
+      const valueNode = this.valueNode;
+      const canToggleFlow = isYAMLCollection(valueNode) && valueNode.childCount > 0;
       editor._onDidClickFrontmatterPropertyType.fire({
         pos: pos as EditorLoc,
         rect: this.button.getBoundingClientRect(),
         type: this.valueType,
+        flow: canToggleFlow ? isFlowCollection(valueNode) : null,
         conversions: {
           string: this.conversionEffect('string'), number: this.conversionEffect('number'),
           boolean: this.conversionEffect('boolean'), null: this.conversionEffect('null'),
@@ -165,6 +366,7 @@ class EntryView implements PropertyView {
         },
         hold: () => this.controlHold.acquire(alive),
         setType: type => runEntry((state, at) => changeFrontmatterType(state, at, type)),
+        setFlow: flow => runEntry((state, at) => setFrontmatterFlow(state, at, flow)),
         insertProperty: side => runEntry((state, at) => {
           const position = state.doc.resolve(at);
           return insertFrontmatterEntry(state, position.before(), position.index() + (side === 'below' ? 1 : 0));
@@ -175,22 +377,43 @@ class EntryView implements PropertyView {
     this.button.onkeydown = event => {
       if (!view.isDestroyed && routeHistoryKey(view, event)) event.stopPropagation();
     };
-    this.sync();
     registerBlockView(node, this);
+    this.sync();
   }
 
-  get brush(): boolean { return this.node.type === schema.nodes.yamlPair; }
-  get box(): HTMLElement { return this.dom; }
+  get brush(): boolean {
+    if (this.inFlowState && this.valueNode.type === schema.nodes.yamlScalar) return false;
+    return !this.inFlowState;
+  }
+  get box(): HTMLElement | undefined {
+    return this.inFlowState ? undefined : this.dom;
+  }
+
+  /** Return the entry capsule DOM element for `BlockSelection` masks even when wrapping a flow boolean. */
+  get selectionTarget(): HTMLElement {
+    return this.dom;
+  }
+  /** Wrapped scalar or boolean DOM element when this entry wraps a sequence scalar, or `null` for pairs and collections. */
+  get scalarDOM(): HTMLElement | null {
+    if (this.value instanceof ScalarView || this.value instanceof BooleanView) return this.value.dom;
+    return null;
+  }
+  nodePosition(): number | undefined { return this.getPos(); }
   get field(): HTMLElement | undefined {
     return this.node.type === schema.nodes.yamlPair ? this.entry.firstElementChild as HTMLElement : undefined;
   }
   get content(): HTMLElement {
-    if (this.node.type !== schema.nodes.yamlPair) return this.dom;
+    if (this.node.type !== schema.nodes.yamlPair) {
+      const inner = this.value?.dom;
+      return (inner && nodeView(inner)?.sequence?.content) ?? this.dom;
+    }
     const value = this.entry.lastElementChild as HTMLElement;
     return nodeView(value)?.sequence?.content ?? value;
   }
   get handle(): HandleTarget | undefined {
-    return this.field ? { kind: 'text', target: this.field } : undefined;
+    if (this.field) return { kind: 'text', target: this.field };
+    if (isYAMLCollection(this.valueNode)) return { kind: 'box', target: this.button };
+    return undefined;
   }
 
   private get valueNode(): Node { return this.node.type === schema.nodes.yamlPair ? this.node.child(1) : this.node; }
@@ -204,7 +427,6 @@ class EntryView implements PropertyView {
     return convertedFrontmatterValue(this.valueNode, type) ? 'convert' : 'reset';
   }
 
-
   update(node: Node, decorations: readonly Decoration[], inner: DecorationSource): boolean {
     if (node.type !== this.node.type || this.value?.update && !this.value.update(node, decorations, inner))
       return false;
@@ -215,7 +437,28 @@ class EntryView implements PropertyView {
 
   sync(): void {
     this.button.disabled = !this.view.editable;
+    const pos = this.getPos();
+    const resolved = pos !== undefined && pos <= this.view.state.doc.content.size
+      ? this.view.state.doc.resolve(pos)
+      : null;
+    const inFlow = resolved !== null && isFlowCollection(resolved.parent);
+    this.inFlowState = inFlow;
+    if (inFlow) delete this.dom.dataset.blockBox;
+    else this.dom.dataset.blockBox = this.node.type.name;
+    this.dom.dataset.inFlow = String(inFlow);
+    if (this.indexBadge) {
+      this.indexBadge.dom.hidden = inFlow;
+      if (!inFlow && resolved !== null) {
+        const numberText = String(resolved.index() + 1);
+        if (this.indexBadge.label.textContent !== numberText) {
+          this.indexBadge.label.textContent = numberText;
+        }
+      }
+    }
+    const kind = entryValueKind(this.valueNode);
+    this.dom.dataset.valueKind = kind;
     const type = this.valueType;
+    this.dom.dataset.valueType = type;
     if (this.icon.dataset.type !== type) {
       this.icon.dataset.type = type;
       this.icon.innerHTML = frontmatterTypeIcons[type];
@@ -230,12 +473,15 @@ class EntryView implements PropertyView {
   }
   ignoreMutation(mutation: ViewMutationRecord): boolean {
     return this.mount.contains(mutation.target) ||
+      (this.indexBadge !== undefined && this.indexBadge.dom.contains(mutation.target)) ||
+      (mutation.type === 'attributes' && mutation.target === this.dom) ||
       this.value?.ignoreMutation?.(mutation) === true;
   }
   destroy(): void {
     this.destroyed = true;
     this.value?.destroy?.();
-    this.button.onclick = this.button.onkeydown = null;
+    this.button.onclick = null;
+    this.button.onkeydown = null;
     this.forget(this);
   }
 }
@@ -246,6 +492,7 @@ class CollectionView implements PropertyView {
   private readonly footer: HTMLDivElement;
   readonly contentDOM: HTMLDivElement;
   private readonly button: HTMLButtonElement;
+  private readonly seq: ChildSequence;
 
   constructor(private node: Node, readonly view: EditorView, private readonly getPos: () => number | undefined,
     private readonly forget: (node: PropertyView) => void) {
@@ -260,8 +507,13 @@ class CollectionView implements PropertyView {
     this.button = this.footer.appendChild(doc.createElement('button'));
     this.button.type = 'button';
     this.button.className = 'frontmatter-add-button';
-    this.button.append(propertyIcon(doc, '<path d="M12 5v14M5 12h14" />', '2'),
-      this.node.type === schema.nodes.yamlMapping ? 'Add property' : 'Add item');
+    const actionLabel = this.node.type === schema.nodes.yamlMapping ? 'Add property' : 'Add item';
+    this.button.setAttribute('aria-label', actionLabel);
+    this.button.title = actionLabel;
+    const textSpan = doc.createElement('span');
+    textSpan.className = 'frontmatter-add-label';
+    textSpan.textContent = actionLabel;
+    this.button.append(propertyIcon(doc, '<path d="M12 5v14M5 12h14" />', '2'), textSpan);
     this.button.onclick = () => {
       if ((this.view.isDestroyed || !canRunCommand(this.view.state, this.view))) return;
       this.add();
@@ -270,11 +522,14 @@ class CollectionView implements PropertyView {
     this.button.onkeydown = event => {
       if (!view.isDestroyed && routeHistoryKey(view, event)) event.stopPropagation();
     };
+    this.seq = { content: this.contentDOM, trailing: this.footer };
     registerNodeView(this);
     this.sync();
   }
 
-  get sequence(): ChildSequence { return { content: this.contentDOM, trailing: this.footer }; }
+  get sequence(): ChildSequence | undefined {
+    return isFlowCollection(this.node) ? undefined : this.seq;
+  }
 
   private add(): void {
     const pos = this.getPos();
@@ -288,11 +543,35 @@ class CollectionView implements PropertyView {
     this.sync();
     return true;
   }
-  sync(): void { this.button.disabled = !this.view.editable; }
-  stopEvent(event: Event): boolean { return this.footer.contains(event.target as DOMNode); }
-  ignoreMutation(mutation: ViewMutationRecord): boolean { return this.footer.contains(mutation.target); }
+  sync(): void {
+    this.button.disabled = !this.view.editable;
+    const flow = isFlowCollection(this.node);
+    this.dom.dataset.flow = String(flow);
+    this.dom.dataset.empty = String(this.node.childCount === 0);
+    syncNodeViewSequence(this, this.contentDOM);
+    if (this.node.type === schema.nodes.yamlSequence) {
+      const digits = sequenceIndexDigits(this.node.childCount);
+      if (this.dom.style.getPropertyValue('--yaml-index-digits') !== digits) {
+        this.dom.style.setProperty('--yaml-index-digits', digits);
+      }
+    }
+  }
+
+  /** Ignore clicks inside the collection's add-entry footer. */
+  stopEvent(event: Event): boolean {
+    return this.footer.contains(event.target as DOMNode);
+  }
+
+  /** Ignore DOM mutations from the footer button or container styling attributes. */
+  ignoreMutation(mutation: ViewMutationRecord): boolean {
+    return this.footer.contains(mutation.target) ||
+      (mutation.type === 'attributes' && mutation.target === this.dom);
+  }
+
+  /** Clear button handlers and unregister this collection view on teardown. */
   destroy(): void {
-    this.button.onclick = this.button.onkeydown = null;
+    this.button.onclick = null;
+    this.button.onkeydown = null;
     this.forget(this);
   }
 }
@@ -300,6 +579,8 @@ class CollectionView implements PropertyView {
 /** A boolean is one atomic value. It has no hidden text field or separate UI state. */
 class BooleanView implements PropertyView {
   readonly dom: HTMLDivElement;
+  readonly selectionTarget = null;
+  readonly brush = false;
   private readonly marker: HTMLSpanElement;
   private readonly checkbox: HTMLInputElement;
 
@@ -328,7 +609,7 @@ class BooleanView implements PropertyView {
     this.sync();
   }
 
-  get selectionTarget(): HTMLElement { return this.marker; }
+  nodePosition(): number | undefined { return this.getPos(); }
 
   private setChecked(checked: boolean): void {
     const pos = this.getPos();

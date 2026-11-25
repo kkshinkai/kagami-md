@@ -11,7 +11,8 @@ import { DOMSerializer, type Mark, type Node } from 'prosemirror-model';
 import type { EditorView } from 'prosemirror-view';
 import { calloutIcons, calloutLabels } from './callout.js';
 import type { KagamiMD } from '../editor/editor.js';
-import { frontmatterTypeIcons, frontmatterValueType } from './frontmatter.js';
+import { frontmatterTypeIcons, frontmatterValueType, isFlowCollection } from './frontmatter.js';
+import { createSequenceIndexBadge, entryValueKind, scalarPlaceholder, sequenceIndexDigits } from './propertyview.js';
 import { mathFormulas, mathPreview } from './math.js';
 import { imageWidget, readImages } from './image.js';
 import { selectedBlocks, type BlockRange } from '../state/selection.js';
@@ -174,7 +175,7 @@ class PreviewContext {
       target.append(this.element('br'));
   }
 
-  render(node: Node, pos: number, parent?: Node): HTMLElement {
+  render(node: Node, pos: number, parent?: Node, childIndex = 0): HTMLElement {
     const output = DOMSerializer.renderSpec(this.document, node.type.spec.toDOM!(node));
     let dom = output.dom as HTMLElement;
     let content = output.contentDOM as HTMLElement | undefined;
@@ -220,7 +221,7 @@ class PreviewContext {
         const button = this.element('button', 'callout-type-button');
         button.append(this.icon(calloutIcons[type]));
         mount.append(button);
-        dom.append(mount, content);
+        dom.append(content, mount);
         break;
       }
       case schema.nodes.mathBlock: {
@@ -274,23 +275,61 @@ class PreviewContext {
         button.append(this.icon(frontmatterTypeIcons[type]));
         mount.append(button);
         content = this.element('div', 'md-yaml-entry-content');
+        dom.dataset.inFlow = String(Boolean(parent && isFlowCollection(parent)));
+        dom.dataset.valueKind = entryValueKind(value);
+        dom.dataset.valueType = type;
         dom.replaceChildren(mount, content);
         break;
       }
       case schema.nodes.yamlMapping:
       case schema.nodes.yamlSequence: {
+        dom.dataset.flow = String(isFlowCollection(node));
+        dom.dataset.empty = String(node.childCount === 0);
+        if (node.type === schema.nodes.yamlSequence) {
+          dom.style.setProperty('--yaml-index-digits', sequenceIndexDigits(node.childCount));
+        }
         content = this.element('div', 'md-yaml-entries');
         dom.replaceChildren(content, this.element('div', 'md-yaml-add'));
         break;
       }
-      case schema.nodes.yamlScalar:
-        if (node.attrs.tag === 'boolean')
-          dom.replaceChildren(this.checkbox(node.textContent === 'true', 'md-yaml-boolean-control'));
+      case schema.nodes.yamlScalar: {
+        const type = frontmatterValueType(node);
+        const isKey = parent?.type === schema.nodes.yamlPair && childIndex === 0;
+        dom.classList.add(`md-yaml-${type}`);
+        if (isKey) dom.classList.add('md-yaml-key');
+        if (node.attrs.tag === 'boolean') {
+          dom.replaceChildren(this.checkbox(node.textContent.toLowerCase() === 'true', 'md-yaml-boolean-control'));
+          content = undefined;
+        } else {
+          const placeholder = scalarPlaceholder(node, isKey);
+          if (placeholder !== null) dom.dataset.placeholder = placeholder;
+        }
         break;
+      }
     }
     if (content) {
       if (node.inlineContent) this.inline(node, pos, content);
-      else node.forEach((child, offset) => content!.append(this.render(child, pos + 1 + offset, node)));
+      else node.forEach((child, offset, index) => content!.append(this.render(child, pos + 1 + offset, node, index)));
+    }
+    if (parent?.type === schema.nodes.yamlSequence) {
+      const item = this.element('div', 'md-yaml-item');
+      const type = frontmatterValueType(node);
+      const inFlow = isFlowCollection(parent);
+      item.dataset.inFlow = String(inFlow);
+      item.dataset.valueKind = entryValueKind(node);
+      item.dataset.valueType = type;
+      const mount = this.element('span', 'md-yaml-type');
+      const button = this.element('button', 'frontmatter-type-button');
+      button.append(this.icon(frontmatterTypeIcons[type]));
+      mount.append(button);
+      const entry = this.element('div', 'md-yaml-entry-content');
+      if (!inFlow) {
+        const badge = createSequenceIndexBadge(this.document, childIndex + 1);
+        entry.append(badge.dom);
+      }
+      entry.append(dom);
+      item.append(mount, entry);
+      return item;
     }
     return dom;
   }
@@ -334,13 +373,13 @@ class PreviewContext {
           const rendered = DOMSerializer.renderSpec(this.document, list.type.spec.toDOM!(list))
             .dom as HTMLElement;
           if (list.type === schema.nodes.orderedList)
-            rendered.setAttribute('start', String(list.attrs.start + $pos.index()));
+            rendered.setAttribute('start', String(list.attrs.startNumber + $pos.index()));
           destination = rendered;
           root.append(destination);
           destination.style.paddingLeft = this.win.getComputedStyle(source.parentElement!).paddingLeft;
         }
       }
-      const dom = this.render(block.node, block.from, $pos.parent);
+      const dom = this.render(block.node, block.from, $pos.parent, $pos.index());
       const bounds = source.getBoundingClientRect();
       let blockWidth = bounds.width / this.scale.x;
       if (block.node.type === schema.nodes.table) {
@@ -362,7 +401,10 @@ class PreviewContext {
         '--yaml-key-width',
         '--yaml-entry-gap',
         '--yaml-type-column',
-        '--yaml-collection-inset',
+        '--yaml-index-digits',
+        '--yaml-seed',
+        '--yaml-border',
+        '--yaml-divider',
         '--editor-paragraph-padding-block',
         '--editor-list-indent',
         '--editor-quote-indent',

@@ -179,9 +179,10 @@ export function convert(tr: Transform, pos: number, type: NodeType, meaning: Att
 export function insert(tr: Transform, pos: number, type: NodeType, meaning: Attrs, content?: Fragment,
   read?: Syntax): void {
   const at = tr.doc.resolve(pos);
+  const inheritNeighbor = !type.isInGroup('yamlNode') && type !== type.schema.nodes.yamlFrontMatter;
   let neighbor: Node | null = null;
-  if (at.nodeBefore?.type === type) neighbor = at.nodeBefore;
-  else if (at.nodeAfter?.type === type) neighbor = at.nodeAfter;
+  if (inheritNeighbor && at.nodeBefore?.type === type) neighbor = at.nodeBefore;
+  else if (inheritNeighbor && at.nodeAfter?.type === type) neighbor = at.nodeAfter;
   let spelling = neighbor ? combine(type, neighbor.attrs.spelling, null, ['front', 'ordinary']) : null;
   if (type === type.schema.nodes.listItem) spelling = itemSpelling(neighbor, at.parent, at.index(), spelling);
   spelling = changedSpelling(type, meaning, spelling, content);
@@ -467,6 +468,16 @@ function prepareScalar(node: Node): Node {
   return children.every((child, index) => child === node.child(index)) ? node : node.copy(Fragment.fromArray(children));
 }
 
+/** Whether any enclosing `yamlMapping` or `yamlSequence` above `pos` renders in flow layout. */
+function inFlowYAMLCollection(doc: Node, pos: number): boolean {
+  const $pos = doc.resolve(pos);
+  for (let depth = 1; depth <= $pos.depth; depth++) {
+    const ancestor = $pos.node(depth);
+    if (ancestor.type.isInGroup('yamlCollection') && ancestor.attrs.flow === true) return true;
+  }
+  return false;
+}
+
 /**
  * Make the blocks between two positions what [List guardianship] and [No junk] say, after a
  * change made without the structural operations: typing, a native deletion, history. Two lists
@@ -486,11 +497,17 @@ export function normalize(tr: Transform, from: number, to: number, active?: Node
   if (scalar?.type === nodes.yamlScalar && scalar !== active && to === from + scalar.nodeSize &&
       !(at.parent.type === nodes.yamlPair && at.index() === 0) &&
       (!scalar.attrs.spelling || scalar.attrs.spelling.style === 'plain')) {
-    const tag = inferYAMLScalar(scalar.textContent);
-    if (tag !== scalar.attrs.tag) update(tr, from, { tag });
+    const inFlowSeq = at.parent.type === nodes.yamlSequence &&
+      (at.parent.attrs.flow === true || inFlowYAMLCollection(tr.doc, from));
+    // A flow sequence cannot hold an empty unquoted `null` slot (`[one, ]`); keep an untouched empty string as `string`.
+    if (!(inFlowSeq && scalar.content.size === 0 && scalar.attrs.tag === 'string')) {
+      const tag = inferYAMLScalar(scalar.textContent);
+      if (tag !== scalar.attrs.tag) update(tr, from, { tag });
+    }
   }
   const points = new Set([from, to]);
   const items: number[] = [];
+  const flowCollections: number[] = [];
   tr.doc.nodesBetween(from, to, (node, position, parent) => {
     if (node.type === nodes.table && node.attrs.alignments.length !== (node.firstChild?.childCount ?? 0)) {
       update(tr, position,
@@ -499,12 +516,28 @@ export function normalize(tr: Transform, from: number, to: number, active?: Node
             (_, column) => node.attrs.alignments[column] ?? null)
         });
     }
+    if ((node.type === nodes.yamlMapping || node.type === nodes.yamlSequence) && !node.attrs.flow &&
+        (parent?.type !== nodes.yamlFrontMatter && node.childCount === 0 || inFlowYAMLCollection(tr.doc, position))) {
+      flowCollections.push(position);
+    }
     if (node.type.isInGroup('list')) {
       points.add(position);
       points.add(position + node.nodeSize);
     }
     if (node.type === nodes.listItem && parent && !matchingMarker(node, parent)) items.push(position);
   });
+  for (const position of flowCollections) update(tr, position, { flow: true });
+  const emptyFlowNulls: number[] = [];
+  tr.doc.nodesBetween(from, to, (node, position, parent) => {
+    if (node.type === nodes.yamlScalar && node !== active && node.attrs.tag === 'null' &&
+        node.content.size === 0 && parent?.type === nodes.yamlSequence &&
+        (parent.attrs.flow === true || inFlowYAMLCollection(tr.doc, position))) {
+      emptyFlowNulls.push(position);
+    }
+  });
+  for (let index = emptyFlowNulls.length - 1; index >= 0; index--) {
+    tr.insert(emptyFlowNulls[index]! + 1, tr.doc.type.schema.text('null'));
+  }
   for (const position of items) {
     const point = tr.doc.resolve(position);
     const item = point.nodeAfter;

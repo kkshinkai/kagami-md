@@ -15,6 +15,7 @@
   --editor-muted-color: #65686e;
   --editor-handle-color: color-mix(in srgb, #7a7e86 65%, transparent);
   --editor-subtle-color: #6d7077;
+  --editor-placeholder-color: #9ba0a8;
   --editor-link-color: #246bd1;
   --editor-link-underline-color: rgb(36 107 209 / 35%);
   --editor-border-color: #ededf0;
@@ -58,6 +59,7 @@
   --editor-muted-color: #b1b2b8;
   --editor-handle-color: color-mix(in srgb, #999da6 65%, transparent);
   --editor-subtle-color: #a1a4ac;
+  --editor-placeholder-color: #6d717a;
   --editor-link-color: #5797ef;
   --editor-link-underline-color: rgb(87 151 239 / 35%);
   --editor-border-color: #333438;

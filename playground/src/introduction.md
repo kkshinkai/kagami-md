@@ -1,8 +1,16 @@
 ---
 title: Kagami
-tags:
-  - markdown
-  - editor
+subtitle: ""
+draft: false
+tags: [markdown, editor]
+toc: { levels: [2, 3], numbered: false }
+package:
+  name: kagami-md
+  license: MPL-2.0
+  exports: { esm: true, types: true, targets: [browser, node] }
+links:
+  - { label: GitHub, url: https://github.com/kkshinkai/kagami-md }
+  - { label: npm, url: https://www.npmjs.com/package/kagami-md }
 ---
 
 # Kagami

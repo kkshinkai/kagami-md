@@ -420,9 +420,11 @@ export namespace KagamiMD {
     readonly pos: EditorLoc;
     readonly rect: DOMRectReadOnly;
     readonly type: FrontmatterValueType;
+    readonly flow: boolean | null;
     readonly conversions: Readonly<Record<FrontmatterValueType, 'convert' | 'reset'>>;
     hold(): Hold | null;
     setType(type: FrontmatterValueType): boolean;
+    setFlow(flow: boolean): boolean;
     insertProperty(side: 'above' | 'below'): boolean;
     deleteProperty(): boolean;
   }

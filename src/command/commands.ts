@@ -8,6 +8,7 @@
 import { NodeSelection, Selection, TextSelection, type Command as PMCommand } from 'prosemirror-state';
 import { CellSelection } from 'prosemirror-tables';
 import { BlockSelection } from '../state/selection.js';
+import { deleteSelectedFrontmatterBoolean } from '../schema/frontmatter.js';
 import { toggleMark } from '../schema/format.js';
 import { applyTransaction, cursorContext, liftOut, ownsTextblock, splitAt } from '../schema/textblockcontext.js';
 import { lineBreakText } from '../schema/linebreak.js';
@@ -45,11 +46,20 @@ export const toggleHighlight: PMCommand = toggleMark('highlight');
 export const deleteSelection: PMCommand = (state, dispatch) => {
   const { selection } = state;
   if (selection instanceof CellSelection) return guardCellBoundary(1)(state, dispatch);
+  const booleanTr = deleteSelectedFrontmatterBoolean(state, 1);
+  if (booleanTr) {
+    dispatch?.(booleanTr);
+    return true;
+  }
   if (selection.empty) return false;
   if (dispatch) {
     const tr = state.tr;
-    const seam = remove(tr, selection.from, selection.to);
-    tr.setSelection(Selection.near(tr.doc.resolve(seam)));
+    if (selection instanceof BlockSelection) {
+      selection.replace(tr);
+    } else {
+      const seam = remove(tr, selection.from, selection.to);
+      tr.setSelection(Selection.near(tr.doc.resolve(seam)));
+    }
     dispatch(tr.scrollIntoView());
   }
   return true;

@@ -43,10 +43,10 @@ function crossFieldTextInput(): Plugin {
   return new Plugin({
     props: {
       handleTextInput(view, from, to, text) {
-        if (from >= to) return false;
+        if (from >= to || !(view.state.selection instanceof TextSelection)) return false;
         const left = view.state.doc.resolve(from);
         const right = view.state.doc.resolve(to);
-        if (left.sameParent(right)) return false;
+        if (!left.parent.isTextblock || !right.parent.isTextblock || left.sameParent(right)) return false;
         const tr = view.state.tr;
         const pos = remove(tr, from, to);
         const seam = Selection.near(tr.doc.resolve(pos));
